@@ -7525,6 +7525,8 @@ export interface DiagnosticsSnapshot {
   };
   timeline?: {
     storageType: string;
+    degraded?: boolean;
+    degradedReason?: string;
     totalEvents: number;
     oldestEvent?: string;
     newestEvent?: string;
