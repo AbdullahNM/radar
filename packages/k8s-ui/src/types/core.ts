@@ -1082,10 +1082,23 @@ export interface UpgradeInfo {
   error?: string
   // Machine-readable source-resolution failure, used to make the Helm drawer
   // explain whether tracking an OCI source can help.
-  sourceIssue?: 'untracked' | 'repo_index_error' | 'ambiguous_repository'
+  sourceIssue?: 'untracked' | 'repo_index_error' | 'ambiguous_repository' | 'ambiguous_source' | 'source_unavailable'
   // True only when the error is a genuinely untracked source (registering a
   // chart source could fix it). Kept for compatibility; prefer sourceIssue.
   untracked?: boolean
+}
+
+export interface ChartSourceCandidate {
+  type: 'repository' | 'oci'
+  reference: string
+  url?: string
+}
+
+export interface ChartSourceStatus {
+  recorded?: ChartSourceCandidate
+  configured: boolean
+  available: boolean
+  candidates?: ChartSourceCandidate[]
 }
 
 // Batch upgrade info keyed by "storageNamespace/name".

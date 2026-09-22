@@ -134,6 +134,7 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 		r.Get("/releases/{namespace}/{name}/resources/diff", h.handleGetResourceDiff)
 		r.Get("/releases/{namespace}/{name}/upgrade-info", h.handleCheckUpgrade)
 		r.Get("/releases/{namespace}/{name}/versions", h.handleAvailableVersions)
+		r.Get("/releases/{namespace}/{name}/source", h.handleSourceStatus)
 		r.Get("/upgrade-check", h.handleBatchUpgradeCheck)
 		// Actions (write operations)
 		r.Post("/releases/{namespace}/{name}/rollback", h.handleRollback)
@@ -142,10 +143,12 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 		r.Post("/releases/{namespace}/{name}/upgrade-stream", h.handleUpgradeStream)
 		r.Post("/releases/{namespace}/{name}/values/preview", h.handlePreviewValues)
 		r.Put("/releases/{namespace}/{name}/values", h.handleApplyValues)
+		r.Put("/releases/{namespace}/{name}/source", h.handleSetSource)
 		r.Delete("/releases/{namespace}/{name}", h.handleUninstall)
 
 		// Chart browser (local repositories)
 		r.Get("/repositories", h.handleListRepositories)
+		r.Post("/repositories", h.handleAddRepository)
 		r.Post("/repositories/{name}/update", h.handleUpdateRepository)
 
 		// Registered OCI chart sources (the OCI analog of `helm repo add`) — let
@@ -162,6 +165,56 @@ func (h *Handlers) RegisterRoutes(r chi.Router) {
 		r.Get("/artifacthub/charts/{repo}/{chart}", h.handleArtifactHubChart)
 		r.Get("/artifacthub/charts/{repo}/{chart}/{version}", h.handleArtifactHubChartVersion)
 	})
+}
+
+func (h *Handlers) handleSourceStatus(w http.ResponseWriter, r *http.Request) {
+	client := GetClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "Helm client not initialized")
+		return
+	}
+	namespace, name := chi.URLParam(r, "namespace"), chi.URLParam(r, "name")
+	var status *ChartSourceStatus
+	var err error
+	if user := auth.UserFromContext(r.Context()); user != nil {
+		status, err = client.SourceStatusAsUser(namespace, name, user.Username, user.Groups)
+	} else {
+		status, err = client.SourceStatus(namespace, name)
+	}
+	if err != nil {
+		writeReleaseReadError(w, err)
+		return
+	}
+	writeJSON(w, status)
+}
+
+func (h *Handlers) handleSetSource(w http.ResponseWriter, r *http.Request) {
+	if !requireHelmWrite(w, r, chi.URLParam(r, "namespace")) {
+		return
+	}
+	var req SetChartSourceRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	client := GetClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "Helm client not initialized")
+		return
+	}
+	namespace, name := chi.URLParam(r, "namespace"), chi.URLParam(r, "name")
+	selected := ChartSourceCandidate{Type: req.Type, Reference: req.Reference, URL: req.URL}
+	var err error
+	if user := auth.UserFromContext(r.Context()); user != nil {
+		err = client.SetSourceAsUser(namespace, name, selected, user.Username, user.Groups)
+	} else {
+		err = client.SetSource(namespace, name, selected)
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, map[string]string{"status": "success"})
 }
 
 // handleListReleases returns all Helm releases
@@ -924,6 +977,54 @@ func (h *Handlers) handleListRepositories(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, repos)
+}
+
+func (h *Handlers) handleAddRepository(w http.ResponseWriter, r *http.Request) {
+	if h.ConfigWriteAllowed != nil && !h.ConfigWriteAllowed(w, r) {
+		return
+	}
+	var req AddRepositoryRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	if (req.Namespace == "") != (req.ReleaseName == "") {
+		writeError(w, http.StatusBadRequest, "namespace and releaseName must be supplied together")
+		return
+	}
+	// Before the repository is fetched: see requireHelmWrite. Without a release
+	// this only changes pod-local repository config.
+	if !requireHelmWrite(w, r, req.Namespace) {
+		return
+	}
+	client := GetClient()
+	if client == nil {
+		writeError(w, http.StatusServiceUnavailable, "Helm client not initialized")
+		return
+	}
+	name, err := client.ensureClassicRepository(req.URL, req.Name)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	canonicalURL, err := canonicalClassicRepositoryURL(req.URL)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if req.Namespace != "" {
+		selected := ChartSourceCandidate{Type: "repository", Reference: name, URL: canonicalURL}
+		if user := auth.UserFromContext(r.Context()); user != nil {
+			err = client.SetSourceAsUser(req.Namespace, req.ReleaseName, selected, user.Username, user.Groups)
+		} else {
+			err = client.SetSource(req.Namespace, req.ReleaseName, selected)
+		}
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+	writeJSON(w, map[string]string{"status": "success", "name": name})
 }
 
 // handleUpdateRepository updates the index for a specific repository. It

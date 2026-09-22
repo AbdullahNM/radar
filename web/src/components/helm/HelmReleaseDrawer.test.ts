@@ -8,8 +8,10 @@ describe('Helm values view', () => {
 })
 
 describe('isUpgradeSourceIssueActionable', () => {
-  it('keeps classic repository ambiguity informational', () => {
-    expect(isUpgradeSourceIssueActionable('ambiguous_repository')).toBe(false)
+  it('allows explicit association for ambiguous and unavailable sources', () => {
+    expect(isUpgradeSourceIssueActionable('ambiguous_repository')).toBe(true)
+    expect(isUpgradeSourceIssueActionable('ambiguous_source')).toBe(true)
+    expect(isUpgradeSourceIssueActionable('source_unavailable')).toBe(true)
   })
 
   it('lets OCI registration help untracked and repo-index states', () => {

@@ -42,6 +42,8 @@ import type {
   ResourceDiff,
   UpgradeInfo,
   BatchUpgradeInfo,
+  ChartSourceCandidate,
+  ChartSourceStatus,
   ValuesDiff,
   ValuesPreviewResponse,
   HelmRepository,
@@ -6193,6 +6195,71 @@ export function useHelmOCISources() {
   return useQuery<string[]>({
     queryKey: ["helm-oci-sources"],
     queryFn: () => fetchJSON("/helm/oci-sources"),
+  });
+}
+
+export function useHelmSourceStatus(namespace: string, releaseName: string, enabled = true) {
+  return useQuery<ChartSourceStatus>({
+    queryKey: ["helm-source-status", namespace, releaseName],
+    queryFn: () => fetchJSON(`/helm/releases/${encodeURIComponent(namespace)}/${encodeURIComponent(releaseName)}/source`),
+    enabled: enabled && Boolean(namespace && releaseName),
+  });
+}
+
+async function mutateHelmSource(namespace: string, releaseName: string, source: ChartSourceCandidate): Promise<void> {
+  const response = await apiFetch(`${getApiBase()}/helm/releases/${encodeURIComponent(namespace)}/${encodeURIComponent(releaseName)}/source`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(source),
+  });
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: "Unknown error" }));
+    throw new Error(error.error || `HTTP ${response.status}`);
+  }
+}
+
+export function useSetHelmSource(namespace: string, releaseName: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (source: ChartSourceCandidate) => mutateHelmSource(namespace, releaseName, source),
+    meta: { errorMessage: "Failed to associate chart source", successMessage: "Chart source associated" },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["helm-source-status", namespace, releaseName] });
+      queryClient.invalidateQueries({ queryKey: ["helm-upgrade-info"] });
+      queryClient.invalidateQueries({ queryKey: ["helm-batch-upgrade-info"] });
+    },
+  });
+}
+
+interface AddHelmRepositoryRequest {
+  name: string
+  url: string
+  namespace?: string
+  releaseName?: string
+}
+
+export function useAddHelmRepository() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (request: AddHelmRepositoryRequest): Promise<{ status: string; name: string }> => {
+      const response = await apiFetch(`${getApiBase()}/helm/repositories`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: "Unknown error" }));
+        throw new Error(error.error || `HTTP ${response.status}`);
+      }
+      return response.json();
+    },
+    meta: { errorMessage: "Failed to add Helm repository", successMessage: "Helm repository added" },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["helm-repositories"] });
+      queryClient.invalidateQueries({ queryKey: ["helm-source-status"] });
+      queryClient.invalidateQueries({ queryKey: ["helm-upgrade-info"] });
+      queryClient.invalidateQueries({ queryKey: ["helm-batch-upgrade-info"] });
+    },
   });
 }
 
