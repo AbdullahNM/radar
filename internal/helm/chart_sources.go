@@ -18,6 +18,7 @@ import (
 	"helm.sh/helm/v3/pkg/getter"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/repo"
+	orasregistry "oras.land/oras-go/v2/registry"
 )
 
 const (
@@ -28,7 +29,12 @@ const (
 	chartSourceMaxChunks = 16
 )
 
-var repositoryNamePartRE = regexp.MustCompile(`[^a-z0-9._-]+`)
+var (
+	repositoryNamePartRE        = regexp.MustCompile(`[^a-z0-9._-]+`)
+	errInvalidChartSource       = errors.New("invalid chart source")
+	errInvalidRepositoryRequest = errors.New("invalid repository request")
+	errRepositoryConflict       = errors.New("repository configuration conflict")
+)
 
 func addChartSourceLabelChunks(labels map[string]string, prefix, value string) bool {
 	encoded := base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString([]byte(value))
@@ -74,8 +80,8 @@ func chartSourceLabels(source *ChartSourceCandidate) map[string]string {
 		if source.URL != "" || !strings.HasPrefix(source.Reference, "oci://") {
 			return nil
 		}
-		parsed, err := url.Parse(source.Reference)
-		if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || parsed.Host == "" {
+		stableReference, err := stableOCIChartReference(source.Reference)
+		if err != nil || stableReference != source.Reference {
 			return nil
 		}
 	}
@@ -91,7 +97,7 @@ func chartSourceLabels(source *ChartSourceCandidate) map[string]string {
 
 func validateChartSourceCandidate(source *ChartSourceCandidate) error {
 	if len(chartSourceLabels(source)) == 0 {
-		return fmt.Errorf("chart source is invalid or too long to persist safely")
+		return fmt.Errorf("%w: source is malformed or too long to persist safely", errInvalidChartSource)
 	}
 	return nil
 }
@@ -183,19 +189,22 @@ func stableRepositoryName(preferred, rawURL string) string {
 func canonicalClassicRepositoryURL(rawURL string) (string, error) {
 	parsed, err := url.Parse(strings.TrimRight(strings.TrimSpace(rawURL), "/"))
 	if err != nil {
-		return "", fmt.Errorf("invalid Helm repository URL")
+		return "", fmt.Errorf("%w: invalid Helm repository URL", errInvalidRepositoryRequest)
 	}
 	parsed.Scheme = strings.ToLower(parsed.Scheme)
 	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return "", fmt.Errorf("invalid Helm repository URL")
+		return "", fmt.Errorf("%w: invalid Helm repository URL", errInvalidRepositoryRequest)
 	}
 	if parsed.User != nil {
-		return "", fmt.Errorf("repository URL must not contain credentials")
+		return "", fmt.Errorf("%w: repository URL must not contain credentials", errInvalidRepositoryRequest)
 	}
 	if parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("repository URL must not contain query credentials or fragments")
+		return "", fmt.Errorf("%w: repository URL must not contain query credentials or fragments", errInvalidRepositoryRequest)
 	}
 	hostname := strings.ToLower(parsed.Hostname())
+	if err := rejectLinkLocalHost(parsed.Host); err != nil {
+		return "", fmt.Errorf("%w: %v", errInvalidRepositoryRequest, err)
+	}
 	port := parsed.Port()
 	if (parsed.Scheme == "http" && port == "80") || (parsed.Scheme == "https" && port == "443") {
 		port = ""
@@ -211,6 +220,21 @@ func canonicalClassicRepositoryURL(rawURL string) (string, error) {
 	return parsed.String(), nil
 }
 
+// stableOCIChartReference removes the install-only tag or digest selector from
+// an OCI reference. Provenance records the repository/chart identity so later
+// tag discovery and exact-version resolution can use it.
+func stableOCIChartReference(raw string) (string, error) {
+	parsedURL, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsedURL.Scheme != "oci" || parsedURL.Host == "" || parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
+		return "", fmt.Errorf("%w: invalid OCI chart source", errInvalidChartSource)
+	}
+	parsedReference, err := orasregistry.ParseReference(strings.TrimPrefix(strings.TrimSpace(raw), "oci://"))
+	if err != nil || parsedReference.Registry == "" || parsedReference.Repository == "" {
+		return "", fmt.Errorf("%w: invalid OCI chart source", errInvalidChartSource)
+	}
+	return "oci://" + parsedReference.Registry + "/" + parsedReference.Repository, nil
+}
+
 // installChartSource derives provenance without mutating source configuration.
 // Callers invoke it only after preInstallCheck has accepted the install.
 func (c *Client) installChartSource(req *InstallRequest) (*ChartSourceCandidate, error) {
@@ -219,7 +243,11 @@ func (c *Client) installChartSource(req *InstallRequest) (*ChartSourceCandidate,
 		if err != nil {
 			return nil, err
 		}
-		return &ChartSourceCandidate{Type: "oci", Reference: chartURL}, nil
+		stableReference, err := stableOCIChartReference(chartURL)
+		if err != nil {
+			return nil, err
+		}
+		return &ChartSourceCandidate{Type: "oci", Reference: stableReference}, nil
 	}
 	if strings.HasPrefix(req.Repository, "http://") || strings.HasPrefix(req.Repository, "https://") {
 		repoURL, err := canonicalClassicRepositoryURL(req.Repository)
@@ -238,7 +266,7 @@ func (c *Client) installChartSource(req *InstallRequest) (*ChartSourceCandidate,
 	}
 	entry := f.Get(req.Repository)
 	if entry == nil {
-		return nil, fmt.Errorf("repository %s not found", req.Repository)
+		return nil, fmt.Errorf("%w: repository %q not found", errInvalidRepositoryRequest, req.Repository)
 	}
 	repoURL, err := canonicalClassicRepositoryURL(entry.URL)
 	if err != nil {
@@ -247,8 +275,10 @@ func (c *Client) installChartSource(req *InstallRequest) (*ChartSourceCandidate,
 	return &ChartSourceCandidate{Type: "repository", Reference: entry.Name, URL: repoURL}, nil
 }
 
-// ensureClassicRepository downloads the index before acquiring c.mu. The lock
-// protects only the repositories.yaml read/modify/write sequence.
+// ensureClassicRepository downloads into an isolated directory before
+// acquiring c.mu. The accepted alias is revalidated under the lock, then the
+// repository config is persisted before the staged index is atomically
+// published into the shared cache.
 func (c *Client) ensureClassicRepository(rawURL, preferredName string) (string, error) {
 	repoURL, err := canonicalClassicRepositoryURL(rawURL)
 	if err != nil {
@@ -273,12 +303,21 @@ func (c *Client) ensureClassicRepository(rawURL, preferredName string) (string, 
 	}
 	c.mu.RUnlock()
 	entry := &repo.Entry{Name: name, URL: repoURL}
+	if err := os.MkdirAll(c.settings.RepositoryCache, 0o755); err != nil {
+		return "", fmt.Errorf("prepare repository cache: %w", err)
+	}
+	stageDir, err := os.MkdirTemp(c.settings.RepositoryCache, ".radar-repository-")
+	if err != nil {
+		return "", fmt.Errorf("stage repository index: %w", err)
+	}
+	defer os.RemoveAll(stageDir)
 	chartRepo, err := repo.NewChartRepository(entry, getter.All(c.settings))
 	if err != nil {
 		return "", fmt.Errorf("failed to create chart repository: %w", err)
 	}
-	chartRepo.CachePath = c.settings.RepositoryCache
-	if _, err := chartRepo.DownloadIndexFile(); err != nil {
+	chartRepo.CachePath = stageDir
+	stagedIndex, err := chartRepo.DownloadIndexFile()
+	if err != nil {
 		return "", fmt.Errorf("failed to download repository index: %w", err)
 	}
 
@@ -295,19 +334,45 @@ func (c *Client) ensureClassicRepository(rawURL, preferredName string) (string, 
 		existingURL, canonicalErr := canonicalClassicRepositoryURL(existing.URL)
 		if canonicalErr == nil && existingURL == repoURL {
 			if existing.Name != name {
-				return "", fmt.Errorf("repository configuration changed concurrently; retry the request")
+				return "", fmt.Errorf("%w: repository configuration changed concurrently; retry the request", errRepositoryConflict)
+			}
+			if err := publishStagedRepositoryCache(stageDir, stagedIndex, c.settings.RepositoryCache); err != nil {
+				return "", err
 			}
 			return existing.Name, nil
 		}
 	}
 	if existing := f.Get(name); existing != nil {
-		return "", fmt.Errorf("repository name %q is already configured with a different URL", name)
+		return "", fmt.Errorf("%w: repository name %q is already configured with a different URL", errRepositoryConflict, name)
 	}
 	f.Update(entry)
 	if err := f.WriteFile(c.settings.RepositoryConfig, 0o600); err != nil {
 		return "", fmt.Errorf("failed to persist Helm repository: %w", err)
 	}
+	if err := publishStagedRepositoryCache(stageDir, stagedIndex, c.settings.RepositoryCache); err != nil {
+		return "", err
+	}
 	return name, nil
+}
+
+func publishStagedRepositoryCache(stageDir, stagedIndex, cacheDir string) error {
+	entries, err := os.ReadDir(stageDir)
+	if err != nil {
+		return fmt.Errorf("read staged repository cache: %w", err)
+	}
+	indexBase := filepath.Base(stagedIndex)
+	for _, entry := range entries {
+		if entry.IsDir() || entry.Name() == indexBase {
+			continue
+		}
+		if err := os.Rename(filepath.Join(stageDir, entry.Name()), filepath.Join(cacheDir, entry.Name())); err != nil {
+			return fmt.Errorf("publish repository cache metadata: %w", err)
+		}
+	}
+	if err := os.Rename(stagedIndex, filepath.Join(cacheDir, indexBase)); err != nil {
+		return fmt.Errorf("publish repository index: %w", err)
+	}
+	return nil
 }
 
 func (c *Client) configuredChartSourceCandidates(chartName, version string, lister ociTagLister) ([]ChartSourceCandidate, error) {
@@ -457,6 +522,10 @@ func ociSourceConfigured(reference string) bool {
 }
 
 func (c *Client) resolveRecordedChartPath(actionConfig *action.Configuration, source ChartSourceCandidate, chartName, version string) (string, string, error) {
+	return c.resolveRecordedChartPathWithLister(actionConfig, source, chartName, version, nil)
+}
+
+func (c *Client) resolveRecordedChartPathWithLister(_ *action.Configuration, source ChartSourceCandidate, chartName, version string, lister ociTagLister) (string, string, error) {
 	switch source.Type {
 	case "repository":
 		configured := c.configuredRepositoryForSource(source)
@@ -468,7 +537,9 @@ func (c *Client) resolveRecordedChartPath(actionConfig *action.Configuration, so
 		if !ociSourceConfigured(source.Reference) {
 			return "", "", fmt.Errorf("recorded OCI chart source is not configured on this Radar installation")
 		}
-		lister := c.newRegistryClient()
+		if lister == nil {
+			lister = c.newRegistryClient()
+		}
 		if lister == nil {
 			return "", "", fmt.Errorf("recorded OCI chart source is unavailable")
 		}
@@ -570,7 +641,7 @@ func (c *Client) setSourceWith(actionConfig *action.Configuration, name string, 
 		}
 	}
 	if persisted == nil {
-		return fmt.Errorf("selected source does not publish %s version %s", rel.Chart.Metadata.Name, rel.Chart.Metadata.Version)
+		return fmt.Errorf("%w: selected source does not publish %s version %s", errInvalidChartSource, rel.Chart.Metadata.Name, rel.Chart.Metadata.Version)
 	}
 	rel.Labels = mergeChartSourceLabels(rel.Labels, persisted)
 	return actionConfig.Releases.Update(rel)

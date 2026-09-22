@@ -6207,7 +6207,7 @@ export function useHelmSourceStatus(namespace: string, releaseName: string, enab
 }
 
 async function mutateHelmSource(namespace: string, releaseName: string, source: ChartSourceCandidate): Promise<void> {
-  const response = await apiFetch(`${getApiBase()}/helm/releases/${encodeURIComponent(namespace)}/${encodeURIComponent(releaseName)}/source`, {
+  const response = await apiFetch(apiUrl(`/helm/releases/${encodeURIComponent(namespace)}/${encodeURIComponent(releaseName)}/source`), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(source),
@@ -6242,7 +6242,7 @@ export function useAddHelmRepository() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async (request: AddHelmRepositoryRequest): Promise<{ status: string; name: string }> => {
-      const response = await apiFetch(`${getApiBase()}/helm/repositories`, {
+      const response = await apiFetch(apiUrl('/helm/repositories'), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(request),
@@ -6267,7 +6267,7 @@ async function mutateOCISource(
   method: "POST" | "DELETE",
   source: string,
 ): Promise<string[]> {
-  const response = await apiFetch(`${getApiBase()}/helm/oci-sources`, {
+  const response = await apiFetch(apiUrl('/helm/oci-sources'), {
     method,
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ source }),
@@ -6279,14 +6279,17 @@ async function mutateOCISource(
   return response.json();
 }
 
-// Invalidate the upgrade-info queries so a newly-registered source is probed
-// immediately and "source not tracked" re-resolves.
-function invalidateHelmAfterSourceChange(
+// Invalidate source inventory/status and upgrade info so an open source dialog
+// and upgrade checks immediately reflect source additions or removals.
+export function invalidateHelmAfterSourceChange(
   queryClient: ReturnType<typeof useQueryClient>,
 ) {
-  queryClient.invalidateQueries({ queryKey: ["helm-oci-sources"] });
-  queryClient.invalidateQueries({ queryKey: ["helm-upgrade-info"] });
-  queryClient.invalidateQueries({ queryKey: ["helm-batch-upgrade-info"] });
+  return Promise.all([
+    queryClient.invalidateQueries({ queryKey: ["helm-oci-sources"] }),
+    queryClient.invalidateQueries({ queryKey: ["helm-source-status"] }),
+    queryClient.invalidateQueries({ queryKey: ["helm-upgrade-info"] }),
+    queryClient.invalidateQueries({ queryKey: ["helm-batch-upgrade-info"] }),
+  ])
 }
 
 export function useAddOCISource() {

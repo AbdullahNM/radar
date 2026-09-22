@@ -1088,11 +1088,9 @@ export interface UpgradeInfo {
   untracked?: boolean
 }
 
-export interface ChartSourceCandidate {
-  type: 'repository' | 'oci'
-  reference: string
-  url?: string
-}
+export type ChartSourceCandidate =
+  | { type: 'repository'; reference: string; url: string }
+  | { type: 'oci'; reference: string; url?: never }
 
 export interface ChartSourceStatus {
   recorded?: ChartSourceCandidate

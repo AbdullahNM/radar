@@ -1,11 +1,14 @@
 package helm
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -113,6 +116,95 @@ func TestEnsureClassicRepositoryDoesNotHoldMutexAcrossNetwork(t *testing.T) {
 	}
 }
 
+func TestEnsureClassicRepositoryConcurrentAliasConflictCannotCorruptCache(t *testing.T) {
+	c := newChartSourceTestClient(t)
+	ready := sync.WaitGroup{}
+	ready.Add(2)
+	releaseResponses := make(chan struct{})
+	server := func(chartName string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/index.yaml" {
+				http.NotFound(w, r)
+				return
+			}
+			ready.Done()
+			<-releaseResponses
+			_, _ = w.Write([]byte("apiVersion: v1\nentries:\n  " + chartName + ":\n  - name: " + chartName + "\n    version: 1.0.0\n    urls: [" + chartName + "-1.0.0.tgz]\n"))
+		}))
+	}
+	first, second := server("first-chart"), server("second-chart")
+	defer first.Close()
+	defer second.Close()
+
+	type result struct {
+		url string
+		err error
+	}
+	results := make(chan result, 2)
+	for _, repositoryURL := range []string{first.URL, second.URL} {
+		go func() {
+			_, err := c.ensureClassicRepository(repositoryURL, "shared-alias")
+			results <- result{url: repositoryURL, err: err}
+		}()
+	}
+	ready.Wait()
+	close(releaseResponses)
+
+	var acceptedURL string
+	conflicts := 0
+	for range 2 {
+		got := <-results
+		if got.err == nil {
+			acceptedURL = got.url
+		} else if errors.Is(got.err, errRepositoryConflict) {
+			conflicts++
+		} else {
+			t.Fatalf("unexpected repository-add error: %v", got.err)
+		}
+	}
+	if acceptedURL == "" || conflicts != 1 {
+		t.Fatalf("accepted URL = %q, conflicts = %d; want one accepted and one rejected", acceptedURL, conflicts)
+	}
+	configured, err := repo.LoadFile(c.settings.RepositoryConfig)
+	if err != nil || configured.Get("shared-alias") == nil || configured.Get("shared-alias").URL != acceptedURL {
+		t.Fatalf("configured repository = %+v, %v", configured, err)
+	}
+	index, err := repo.LoadIndexFile(filepath.Join(c.settings.RepositoryCache, "shared-alias-index.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantChart, rejectedChart := "first-chart", "second-chart"
+	if acceptedURL == second.URL {
+		wantChart, rejectedChart = rejectedChart, wantChart
+	}
+	if len(index.Entries[wantChart]) != 1 || len(index.Entries[rejectedChart]) != 0 {
+		t.Fatalf("published cache entries = %v; want only %q from accepted URL", index.Entries, wantChart)
+	}
+}
+
+func TestCanonicalClassicRepositoryURLAppliesExistingAddressPolicy(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{name: "metadata IPv4", url: "http://169.254.169.254/charts", wantErr: true},
+		{name: "link-local IPv4 with port", url: "http://169.254.1.2:8080/charts", wantErr: true},
+		{name: "link-local IPv6", url: "http://[fe80::1]/charts", wantErr: true},
+		{name: "link-local IPv6 with port", url: "http://[fe80::1]:8080/charts", wantErr: true},
+		{name: "loopback remains allowed by policy", url: "http://127.0.0.1:8080/charts"},
+		{name: "localhost remains allowed by policy", url: "http://localhost:8080/charts"},
+		{name: "private address remains allowed by policy", url: "http://10.0.0.5/charts"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := canonicalClassicRepositoryURL(tc.url)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("canonicalClassicRepositoryURL(%q) error = %v, wantErr %v", tc.url, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestConfiguredCandidatesExactAndAmbiguous(t *testing.T) {
 	withOCISources(t, []string{"oci://registry.example.test/charts"})
 	server := chartSourceTestServer(t, "1.2.3", "2.0.0")
@@ -209,19 +301,44 @@ func TestRecordedButUnavailableIsDistinctFromAbsentProvenance(t *testing.T) {
 	}
 }
 
-func TestInstallChartSourceUsesMergedOCIResolutionWithoutCredentials(t *testing.T) {
+func TestInstallChartSourceStripsOCISelectorForRecovery(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		repository string
+	}{
+		{name: "tag", repository: "oci://registry.example.test/team/charts/app:1.2.3"},
+		{name: "digest", repository: "oci://registry.example.test/team/charts/app@sha256:" + strings.Repeat("a", 64)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withOCISources(t, []string{"oci://registry.example.test/team/charts"})
+			c := newChartSourceTestClient(t)
+			installRef, err := resolveOCIChartURL(tc.repository, "app")
+			if err != nil || installRef != tc.repository {
+				t.Fatalf("install resolution = %q, %v; selector must be preserved", installRef, err)
+			}
+			source, err := c.installChartSource(&InstallRequest{Repository: tc.repository, ChartName: "app"})
+			want := ChartSourceCandidate{Type: "oci", Reference: "oci://registry.example.test/team/charts/app"}
+			if err != nil || *source != want {
+				t.Fatalf("recorded source = %+v, %v; want %+v", source, err, want)
+			}
+			lister := &fakeTagLister{tags: map[string][]string{"registry.example.test/team/charts/app": {"1.2.3", "1.2.2"}}}
+			versions := c.candidateVersions(*source, "app", lister)
+			if !slices.Equal(versions, []string{"1.2.3", "1.2.2"}) {
+				t.Fatalf("version discovery = %v", versions)
+			}
+			resolved, kind, err := c.resolveRecordedChartPathWithLister(nil, *source, "app", "1.2.3", lister)
+			if err != nil || resolved != want.Reference || kind != "oci" {
+				t.Fatalf("recorded source resolution = %q, %q, %v", resolved, kind, err)
+			}
+		})
+	}
+}
+
+func TestInstallChartSourceNeverPersistsOCICredentials(t *testing.T) {
 	c := newChartSourceTestClient(t)
-	source, err := c.installChartSource(&InstallRequest{Repository: "oci://registry.example.test/team/charts", ChartName: "app"})
-	if err != nil || *source != (ChartSourceCandidate{Type: "oci", Reference: "oci://registry.example.test/team/charts/app"}) {
-		t.Fatalf("OCI source = %+v, %v", source, err)
-	}
-	if _, err := c.installChartSource(&InstallRequest{Repository: "oci://user:secret@registry.example.test/charts", ChartName: "app"}); err != nil {
-		// Resolution remains #1815's concern; credential rejection happens before persistence.
-		return
-	}
-	credentialed, _ := c.installChartSource(&InstallRequest{Repository: "oci://user:secret@registry.example.test/charts", ChartName: "app"})
-	if validateChartSourceCandidate(credentialed) == nil {
-		t.Fatal("credential-bearing OCI provenance accepted")
+	credentialed, err := c.installChartSource(&InstallRequest{Repository: "oci://user:secret@registry.example.test/charts", ChartName: "app"})
+	if err == nil || credentialed != nil || !errors.Is(err, errInvalidChartSource) {
+		t.Fatalf("credential-bearing OCI provenance = %+v, %v", credentialed, err)
 	}
 }
 

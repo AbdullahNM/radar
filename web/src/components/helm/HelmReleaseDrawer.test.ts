@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_SHOW_EFFECTIVE_VALUES, isUpgradeSourceIssueActionable } from './HelmReleaseDrawer'
+import { DEFAULT_SHOW_EFFECTIVE_VALUES, effectiveHelmStorageNamespace, isUpgradeSourceIssueActionable } from './HelmReleaseDrawer'
 
 describe('Helm values view', () => {
   it('opens on user overrides', () => {
@@ -21,5 +21,15 @@ describe('isUpgradeSourceIssueActionable', () => {
 
   it('does not treat a missing reason code as actionable', () => {
     expect(isUpgradeSourceIssueActionable(undefined)).toBe(false)
+  })
+})
+
+describe('effectiveHelmStorageNamespace', () => {
+  it('falls back to the release namespace when storageNamespace is empty', () => {
+    expect(effectiveHelmStorageNamespace({ namespace: 'production', name: 'release', storageNamespace: '' })).toBe('production')
+  })
+
+  it('uses an explicit storage namespace', () => {
+    expect(effectiveHelmStorageNamespace({ namespace: 'production', name: 'release', storageNamespace: 'helm-storage' })).toBe('helm-storage')
   })
 })

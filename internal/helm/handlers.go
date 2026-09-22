@@ -17,6 +17,7 @@ import (
 	"github.com/skyhook-io/radar/internal/auth"
 	"github.com/skyhook-io/radar/internal/errorlog"
 	"github.com/skyhook-io/radar/internal/k8s"
+	"helm.sh/helm/v3/pkg/storage/driver"
 )
 
 // IsForbiddenError checks if an error is a Kubernetes RBAC forbidden error
@@ -211,7 +212,7 @@ func (h *Handlers) handleSetSource(w http.ResponseWriter, r *http.Request) {
 		err = client.SetSource(namespace, name, selected)
 	}
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeChartSourceOperationError(w, err, "associate-source", namespace, name)
 		return
 	}
 	writeJSON(w, map[string]string{"status": "success"})
@@ -1004,12 +1005,12 @@ func (h *Handlers) handleAddRepository(w http.ResponseWriter, r *http.Request) {
 	}
 	name, err := client.ensureClassicRepository(req.URL, req.Name)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeChartSourceOperationError(w, err, "add-repository", req.Namespace, req.ReleaseName)
 		return
 	}
 	canonicalURL, err := canonicalClassicRepositoryURL(req.URL)
 	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+		writeChartSourceOperationError(w, err, "add-repository", req.Namespace, req.ReleaseName)
 		return
 	}
 	if req.Namespace != "" {
@@ -1020,11 +1021,32 @@ func (h *Handlers) handleAddRepository(w http.ResponseWriter, r *http.Request) {
 			err = client.SetSource(req.Namespace, req.ReleaseName, selected)
 		}
 		if err != nil {
-			writeError(w, http.StatusBadRequest, err.Error())
+			writeChartSourceOperationError(w, err, "associate-repository", req.Namespace, req.ReleaseName)
 			return
 		}
 	}
 	writeJSON(w, map[string]string{"status": "success", "name": name})
+}
+
+func chartSourceErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, driver.ErrReleaseNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, errRepositoryConflict):
+		return http.StatusConflict
+	case errors.Is(err, errInvalidChartSource), errors.Is(err, errInvalidRepositoryRequest):
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
+func writeChartSourceOperationError(w http.ResponseWriter, err error, action, namespace, releaseName string) {
+	status := chartSourceErrorStatus(err)
+	if status >= 500 {
+		log.Printf("[helm] %s %q/%q failed: %v", action, namespace, releaseName, err)
+	}
+	writeError(w, status, err.Error())
 }
 
 // handleUpdateRepository updates the index for a specific repository. It
