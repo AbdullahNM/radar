@@ -14,6 +14,7 @@ import { Tooltip } from '../ui/Tooltip'
 interface ValuesViewerProps {
   values?: HelmValues
   isLoading: boolean
+  error?: unknown
   showEffectiveValues: boolean
   onToggleEffectiveValues: (show: boolean) => void
   onCopy: (text: string) => void
@@ -28,6 +29,7 @@ interface ValuesViewerProps {
 export function ValuesViewer({
   values,
   isLoading,
+  error,
   showEffectiveValues,
   onToggleEffectiveValues,
   onCopy,
@@ -49,13 +51,16 @@ export function ValuesViewer({
   const { allowed: canHelmWrite, reason: helmActReason } = useCanHelmAct(namespace)
   const isHistoricalRevision = typeof revision === 'number' && typeof currentRevision === 'number' && revision !== currentRevision
 
-  const canEdit = Boolean(namespace && name) && canHelmWrite && !isHistoricalRevision
+  const overridesLoaded = values?.userSuppliedLoaded === true
+  const canOfferEdit = Boolean(namespace && name) && canHelmWrite && !isHistoricalRevision
+  const canEdit = canOfferEdit && overridesLoaded
 
   const displayValues = showEffectiveValues ? values?.computed : values?.userSupplied
   const isEmpty = !displayValues || Object.keys(displayValues).length === 0
 
   // Start editing mode
   const handleStartEdit = useCallback(() => {
+    if (!overridesLoaded) return
     // Allow editing even with no user-supplied values (start with empty YAML)
     const yamlStr = values?.userSupplied ? jsonToYaml(values.userSupplied) : ''
     setEditedYaml(yamlStr)
@@ -65,7 +70,7 @@ export function ValuesViewer({
     if (showEffectiveValues) {
       onToggleEffectiveValues(false)
     }
-  }, [values, showEffectiveValues, onToggleEffectiveValues])
+  }, [values, overridesLoaded, showEffectiveValues, onToggleEffectiveValues])
 
   // Cancel editing
   const handleCancelEdit = useCallback(() => {
@@ -96,7 +101,7 @@ export function ValuesViewer({
 
   // Preview changes
   const handlePreview = useCallback(async () => {
-    if (!namespace || !name || isHistoricalRevision) return
+    if (!namespace || !name || isHistoricalRevision || !overridesLoaded) return
     const parsed = parseYaml(editedYaml)
     if (!parsed) return
 
@@ -111,11 +116,11 @@ export function ValuesViewer({
     } catch {
       // Error is handled by mutation
     }
-  }, [namespace, name, isHistoricalRevision, editedYaml, parseYaml, previewMutation])
+  }, [namespace, name, isHistoricalRevision, overridesLoaded, editedYaml, parseYaml, previewMutation])
 
   // Apply changes
   const handleApply = useCallback(async () => {
-    if (!namespace || !name || isHistoricalRevision) return
+    if (!namespace || !name || isHistoricalRevision || !overridesLoaded) return
     const parsed = parseYaml(editedYaml)
     if (!parsed) return
 
@@ -130,11 +135,11 @@ export function ValuesViewer({
     } catch {
       // Error is handled by mutation
     }
-  }, [namespace, name, isHistoricalRevision, editedYaml, parseYaml, applyMutation, handleCancelEdit, onApplySuccess])
+  }, [namespace, name, isHistoricalRevision, overridesLoaded, editedYaml, parseYaml, applyMutation, handleCancelEdit, onApplySuccess])
 
   // Apply from preview modal
   const handleApplyFromPreview = useCallback(async () => {
-    if (!previewData || !namespace || !name || isHistoricalRevision) return
+    if (!previewData || !namespace || !name || isHistoricalRevision || !overridesLoaded) return
     try {
       await applyMutation.mutateAsync({
         namespace,
@@ -147,10 +152,18 @@ export function ValuesViewer({
     } catch {
       // Error is handled by mutation
     }
-  }, [previewData, namespace, name, isHistoricalRevision, applyMutation, handleCancelEdit, onApplySuccess])
+  }, [previewData, namespace, name, isHistoricalRevision, overridesLoaded, applyMutation, handleCancelEdit, onApplySuccess])
 
-  if (isLoading) {
+  if (isLoading && !isEditing) {
     return <PaneLoader label="Loading values…" className="h-32" />
+  }
+
+  if (error) {
+    return (
+      <div role="alert" className="m-4 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+        Unable to load Helm values. Editing and applying user overrides are disabled.
+      </div>
+    )
   }
 
   if (isEmpty && !isEditing) {
@@ -167,10 +180,11 @@ export function ValuesViewer({
           </div>
           <div className="flex items-center gap-2">
             <ValuesViewToggle showEffective={showEffectiveValues} onToggle={onToggleEffectiveValues} disabled={isEditing} />
-            {canEdit && (
+            {canOfferEdit && (
               <button
                 onClick={handleStartEdit}
-                className="flex items-center gap-1 px-2 py-1 text-xs text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded"
+                disabled={!canEdit}
+                className="flex items-center gap-1 px-2 py-1 text-xs text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <Pencil className="w-3.5 h-3.5" />
                 Edit Overrides
@@ -183,9 +197,14 @@ export function ValuesViewer({
             Viewing historical values. Switch back to the latest revision before editing or applying changes.
           </div>
         )}
+        {!overridesLoaded && (
+          <div role="alert" className="mb-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+            User overrides could not be loaded. Editing and applying changes are disabled to preserve stored overrides.
+          </div>
+        )}
         <div className="flex flex-col items-center justify-center h-32 text-theme-text-tertiary gap-2">
           <Settings className="w-8 h-8 text-theme-text-disabled" />
-          <span>{showEffectiveValues ? 'No effective values' : 'No user overrides'}</span>
+          <span>{showEffectiveValues ? 'No effective values' : overridesLoaded ? 'No user overrides' : 'User overrides unavailable'}</span>
         </div>
       </div>
     )
@@ -221,10 +240,11 @@ export function ValuesViewer({
                 {copied ? <Check className="w-3.5 h-3.5 text-green-400" /> : <Copy className="w-3.5 h-3.5" />}
                 Copy
               </button>
-              {canEdit && (
+              {canOfferEdit && (
                 <button
                   onClick={handleStartEdit}
-                  className="flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded border border-blue-500/30"
+                  disabled={!canEdit}
+                  className="flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded border border-blue-500/30 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <Pencil className="w-3.5 h-3.5" />
                   Edit Overrides
@@ -243,7 +263,7 @@ export function ValuesViewer({
               </button>
               <button
                 onClick={handlePreview}
-                disabled={!!yamlError || previewMutation.isPending || isHistoricalRevision}
+                disabled={!!yamlError || previewMutation.isPending || isHistoricalRevision || !overridesLoaded || isLoading}
                 className="flex items-center gap-1 px-2 py-1 text-xs text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded border border-theme-border disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 {previewMutation.isPending ? (
@@ -256,7 +276,7 @@ export function ValuesViewer({
               <Tooltip content={!canHelmWrite ? helmActReason : ''}>
               <button
                 onClick={handleApply}
-                disabled={!!yamlError || applyMutation.isPending || !canHelmWrite || isHistoricalRevision}
+                disabled={!!yamlError || applyMutation.isPending || !canHelmWrite || isHistoricalRevision || !overridesLoaded || isLoading}
                 className="flex items-center gap-1 px-2.5 py-1 text-xs btn-brand rounded disabled:cursor-not-allowed disabled:pointer-events-none"
               >
                 {applyMutation.isPending ? (
@@ -275,6 +295,18 @@ export function ValuesViewer({
       {isHistoricalRevision && (
         <div className="mb-3 rounded border border-theme-border bg-theme-elevated/40 px-3 py-2 text-xs text-theme-text-secondary">
           Viewing historical values. Switch back to the latest revision before editing or applying changes.
+        </div>
+      )}
+
+      {!overridesLoaded && (
+        <div role="alert" className="mb-3 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400">
+          User overrides could not be loaded. Editing and applying changes are disabled to preserve stored overrides.
+        </div>
+      )}
+
+      {isEditing && isLoading && (
+        <div className="mb-3 rounded border border-theme-border bg-theme-elevated/40 px-3 py-2 text-xs text-theme-text-secondary">
+          Refreshing values. Your override edit session is preserved.
         </div>
       )}
 

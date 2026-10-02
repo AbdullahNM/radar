@@ -1001,6 +1001,7 @@ export interface HelmOwnedResource {
 
 export interface HelmValues {
   userSupplied: Record<string, unknown>
+  userSuppliedLoaded: boolean
   computed?: Record<string, unknown>
 }
 
@@ -1009,6 +1010,13 @@ export interface ValuesDiff {
   revision2: number
   allValues: boolean
   diff: string
+}
+
+export interface ValuesDiffs {
+  revision1: number
+  revision2: number
+  userSuppliedDiff: string
+  effectiveValuesDiff: string
 }
 
 export interface ManifestDiff {

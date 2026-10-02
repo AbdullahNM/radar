@@ -43,6 +43,7 @@ vi.mock('../ui/Tooltip', () => ({
 
 const values: HelmValues = {
   userSupplied: { image: { tag: 'pinned' } },
+  userSuppliedLoaded: true,
   computed: {
     image: { repository: 'example/app', tag: 'pinned' },
     replicaCount: 2,
@@ -66,14 +67,25 @@ afterEach(async () => {
   document.body.replaceChildren()
 })
 
-function Harness() {
+function Harness({
+  helmValues = values,
+  simulateOverrideLoading = false,
+}: {
+  helmValues?: HelmValues
+  simulateOverrideLoading?: boolean
+}) {
   const [showEffectiveValues, setShowEffectiveValues] = useState(true)
+  const [isLoading, setIsLoading] = useState(false)
+  const handleToggle = (showEffective: boolean) => {
+    setShowEffectiveValues(showEffective)
+    if (!showEffective && simulateOverrideLoading) setIsLoading(true)
+  }
   return (
     <ValuesViewer
-      values={values}
-      isLoading={false}
+      values={helmValues}
+      isLoading={isLoading}
       showEffectiveValues={showEffectiveValues}
-      onToggleEffectiveValues={setShowEffectiveValues}
+      onToggleEffectiveValues={handleToggle}
       onCopy={() => undefined}
       copied={false}
       namespace="demo"
@@ -82,8 +94,8 @@ function Harness() {
   )
 }
 
-async function renderViewer() {
-  await act(async () => root.render(<Harness />))
+async function renderViewer(node: ReactNode = <Harness />) {
+  await act(async () => root.render(node))
 }
 
 function button(label: string) {
@@ -133,5 +145,52 @@ describe('ValuesViewer', () => {
       name: 'example',
       values: { image: { tag: 'pinned' } },
     })
+  })
+
+  it('blocks editing and apply when user overrides were not loaded', async () => {
+    await renderViewer(
+      <Harness helmValues={{ ...values, userSupplied: {}, userSuppliedLoaded: false }} />,
+    )
+
+    const editButton = button('Edit Overrides') as HTMLButtonElement
+    expect(editButton.disabled).toBe(true)
+    expect(document.body.textContent).toContain(
+      'User overrides could not be loaded',
+    )
+
+    await act(async () => editButton.click())
+
+    expect(document.querySelector('textarea')).toBeNull()
+    expect(button('Apply')).toBeUndefined()
+    expect(mutations.apply).not.toHaveBeenCalled()
+  })
+
+  it('keeps successfully loaded empty overrides editable', async () => {
+    await renderViewer(
+      <Harness helmValues={{ ...values, userSupplied: {}, userSuppliedLoaded: true }} />,
+    )
+
+    await act(async () => button('Edit Overrides')!.click())
+
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('')
+    await act(async () => button('Apply')!.click())
+    expect(mutations.apply).toHaveBeenCalledWith({
+      namespace: 'demo',
+      name: 'example',
+      values: {},
+    })
+  })
+
+  it('preserves the edit session while an override view load is pending', async () => {
+    await renderViewer(<Harness simulateOverrideLoading />)
+
+    await act(async () => button('Edit Overrides')!.click())
+
+    expect(document.body.textContent).toContain('Editing User Overrides')
+    expect(document.body.textContent).toContain(
+      'Your override edit session is preserved',
+    )
+    expect(document.querySelector('textarea')).not.toBeNull()
+    expect((button('Apply') as HTMLButtonElement).disabled).toBe(true)
   })
 })
