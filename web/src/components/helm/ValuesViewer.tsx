@@ -14,8 +14,8 @@ import { Tooltip } from '../ui/Tooltip'
 interface ValuesViewerProps {
   values?: HelmValues
   isLoading: boolean
-  showAllValues: boolean
-  onToggleAllValues: (show: boolean) => void
+  showEffectiveValues: boolean
+  onToggleEffectiveValues: (show: boolean) => void
   onCopy: (text: string) => void
   copied: boolean
   // Required for editing
@@ -28,8 +28,8 @@ interface ValuesViewerProps {
 export function ValuesViewer({
   values,
   isLoading,
-  showAllValues,
-  onToggleAllValues,
+  showEffectiveValues,
+  onToggleEffectiveValues,
   onCopy,
   copied,
   namespace,
@@ -51,7 +51,7 @@ export function ValuesViewer({
 
   const canEdit = Boolean(namespace && name) && canHelmWrite && !isHistoricalRevision
 
-  const displayValues = showAllValues && values?.computed ? values.computed : values?.userSupplied
+  const displayValues = showEffectiveValues ? values?.computed : values?.userSupplied
   const isEmpty = !displayValues || Object.keys(displayValues).length === 0
 
   // Start editing mode
@@ -61,11 +61,11 @@ export function ValuesViewer({
     setEditedYaml(yamlStr)
     setYamlError(null)
     setIsEditing(true)
-    // Switch to user-supplied view when editing
-    if (showAllValues) {
-      onToggleAllValues(false)
+    // Only user overrides are editable.
+    if (showEffectiveValues) {
+      onToggleEffectiveValues(false)
     }
-  }, [values?.userSupplied, showAllValues, onToggleAllValues])
+  }, [values, showEffectiveValues, onToggleEffectiveValues])
 
   // Cancel editing
   const handleCancelEdit = useCallback(() => {
@@ -158,20 +158,22 @@ export function ValuesViewer({
       <div className="p-4">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-theme-text-secondary">Values</span>
+            <span className="text-sm font-medium text-theme-text-secondary">
+              {showEffectiveValues ? 'Effective Values' : 'User Overrides'}
+            </span>
             {isHistoricalRevision && (
               <span className="badge-sm bg-theme-hover/50 text-theme-text-secondary">revision {revision}</span>
             )}
           </div>
           <div className="flex items-center gap-2">
-            <ToggleButton showAll={showAllValues} onToggle={onToggleAllValues} disabled={isEditing} />
+            <ValuesViewToggle showEffective={showEffectiveValues} onToggle={onToggleEffectiveValues} disabled={isEditing} />
             {canEdit && (
               <button
                 onClick={handleStartEdit}
                 className="flex items-center gap-1 px-2 py-1 text-xs text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded"
               >
                 <Pencil className="w-3.5 h-3.5" />
-                Edit
+                Edit Overrides
               </button>
             )}
           </div>
@@ -183,7 +185,7 @@ export function ValuesViewer({
         )}
         <div className="flex flex-col items-center justify-center h-32 text-theme-text-tertiary gap-2">
           <Settings className="w-8 h-8 text-theme-text-disabled" />
-          <span>{showAllValues ? 'No computed values' : 'No user-supplied values'}</span>
+          <span>{showEffectiveValues ? 'No effective values' : 'No user overrides'}</span>
         </div>
       </div>
     )
@@ -197,7 +199,7 @@ export function ValuesViewer({
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-theme-text-secondary">
-            {isEditing ? 'Editing Values' : showAllValues ? 'All Values (Computed)' : 'User-Supplied Values'}
+            {isEditing ? 'Editing User Overrides' : showEffectiveValues ? 'Effective Values' : 'User Overrides'}
           </span>
           {isHistoricalRevision && !isEditing && (
             <span className="badge-sm bg-theme-hover/50 text-theme-text-secondary">revision {revision}</span>
@@ -211,7 +213,7 @@ export function ValuesViewer({
         <div className="flex items-center gap-2">
           {!isEditing && (
             <>
-              <ToggleButton showAll={showAllValues} onToggle={onToggleAllValues} disabled={isEditing} />
+              <ValuesViewToggle showEffective={showEffectiveValues} onToggle={onToggleEffectiveValues} disabled={isEditing} />
               <button
                 onClick={() => onCopy(yamlContent)}
                 className="flex items-center gap-1 px-2 py-1 text-xs text-theme-text-secondary hover:text-theme-text-primary hover:bg-theme-elevated rounded"
@@ -225,7 +227,7 @@ export function ValuesViewer({
                   className="flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 hover:bg-blue-500/10 rounded border border-blue-500/30"
                 >
                   <Pencil className="w-3.5 h-3.5" />
-                  Edit
+                  Edit Overrides
                 </button>
               )}
             </>
@@ -325,28 +327,36 @@ export function ValuesViewer({
   )
 }
 
-function ToggleButton({ showAll, onToggle, disabled }: { showAll: boolean; onToggle: (show: boolean) => void; disabled?: boolean }) {
+function ValuesViewToggle({
+  showEffective,
+  onToggle,
+  disabled,
+}: {
+  showEffective: boolean
+  onToggle: (show: boolean) => void
+  disabled?: boolean
+}) {
   return (
     <div className={clsx('flex items-center bg-theme-elevated/50 rounded-md p-0.5 text-xs', disabled && 'opacity-50 pointer-events-none')}>
-      <button
-        onClick={() => onToggle(false)}
-        disabled={disabled}
-        className={clsx(
-          'px-2 py-1 rounded transition-colors',
-          !showAll ? 'bg-theme-hover text-theme-text-primary' : 'text-theme-text-secondary hover:text-theme-text-primary'
-        )}
-      >
-        User
-      </button>
       <button
         onClick={() => onToggle(true)}
         disabled={disabled}
         className={clsx(
           'px-2 py-1 rounded transition-colors',
-          showAll ? 'bg-theme-hover text-theme-text-primary' : 'text-theme-text-secondary hover:text-theme-text-primary'
+          showEffective ? 'bg-theme-hover text-theme-text-primary' : 'text-theme-text-secondary hover:text-theme-text-primary'
         )}
       >
-        All
+        Effective Values
+      </button>
+      <button
+        onClick={() => onToggle(false)}
+        disabled={disabled}
+        className={clsx(
+          'px-2 py-1 rounded transition-colors',
+          !showEffective ? 'bg-theme-hover text-theme-text-primary' : 'text-theme-text-secondary hover:text-theme-text-primary'
+        )}
+      >
+        User Overrides
       </button>
     </div>
   )
