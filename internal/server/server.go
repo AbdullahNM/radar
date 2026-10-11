@@ -561,6 +561,7 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 			r.Get("/gitops/destination/{kind}/{namespace}/{name}", s.handleGitOpsDestination)
 			r.Get("/gitops/insights/{kind}/{namespace}/{name}", s.handleGitOpsInsights)
 			r.Get("/gitops/managed-resources", s.handleGitOpsManagedResources)
+			r.Post("/gitops/write-evidence", s.handleGitOpsWriteEvidence)
 
 			// RBAC reverse-lookup endpoints. Two shapes for /subject:
 			// ServiceAccount carries a namespace (3 segments after kind);
@@ -1349,6 +1350,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		WorkloadHistory:       true,
 		ServiceEndpointSlices: true,
 		TrafficRecords:        true,
+		GitOpsWriteEvidence:   true,
 	}
 	caps.AuthEnabled = s.authConfig.Enabled()
 	caps.ConfigManagement = s.configManagement()

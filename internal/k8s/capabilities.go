@@ -142,6 +142,7 @@ type FeatureCapabilities struct {
 	WorkloadHistory       bool `json:"workloadHistory"`       // GET /api/workloads/{kind}/{namespace}/{name}/history
 	ServiceEndpointSlices bool `json:"serviceEndpointSlices"` // GET /api/services/{namespace}/{name}/endpointslices
 	TrafficRecords        bool `json:"trafficRecords"`        // GET /api/traffic/flows/records
+	GitOpsWriteEvidence   bool `json:"gitopsWriteEvidence"`   // POST /api/gitops/write-evidence
 }
 
 // WorkloadWritePermissions indicates which workload resources the user can patch.

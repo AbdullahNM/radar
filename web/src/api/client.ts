@@ -2,6 +2,7 @@ import { canonicalResourceGroup } from '@skyhook-io/k8s-ui/utils/api-resources'
 import { knownKindForPluralWithGroup, pluralToKind } from '@skyhook-io/k8s-ui/utils/navigation'
 import { useEffect, useRef } from 'react'
 import type { KueueAdmissionResponse } from '@skyhook-io/k8s-ui/types/scheduling'
+import type { GitOpsWriteEvidence } from '@skyhook-io/k8s-ui/utils/gitops-write-guard'
 import type {
   AppHistory,
   AppRow,
@@ -2508,6 +2509,24 @@ export function useGitOpsInsights(
   });
 }
 
+// Field-level evidence behind the GitOps write guard: whether each path is in
+// the object's last client-side apply or owned by its GitOps controller, plus
+// the owner's sync policy. Read server-side because Radar's caches strip both.
+export function fetchGitOpsWriteEvidence(body: {
+  kind: string;
+  group: string;
+  namespace: string;
+  name: string;
+  paths: string[];
+  owner?: { kind: string; group: string; namespace: string; name: string };
+}): Promise<GitOpsWriteEvidence> {
+  return fetchJSON<GitOpsWriteEvidence>("/gitops/write-evidence", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 // Full Git-rendered desired-vs-live diff for one Argo CD managed resource.
 // ns/name identify the Application; the ref identifies the managed resource.
 // Fetched on demand — the caller mounts this only when the user opens "Full
@@ -2632,15 +2651,17 @@ export function refetchOnResourceEvents(
   return namedObjects.has(resourceEventKey(kind, String(namespace ?? ""), String(name ?? "")));
 }
 
+// `cacheScope` keeps a caller's copy apart from the shared one, for hosts
+// that point one QueryClient at several clusters (see useGitOpsWriteGuard).
 export function useResource<T>(
   kind: string,
   namespace: string,
   name: string,
   group?: string,
-  options?: { enabled?: boolean; refetchInterval?: number | false },
+  options?: { enabled?: boolean; refetchInterval?: number | false; cacheScope?: string },
 ) {
   const query = useQuery<ResourceWithRelationships<T>>({
-    queryKey: ["resource", kind, namespace, name, group],
+    queryKey: ["resource", kind, namespace, name, group, ...(options?.cacheScope ? [options.cacheScope] : [])],
     queryFn: () => fetchResourceWithRelationships<T>(kind, namespace, name, group),
     enabled: (options?.enabled ?? true) && Boolean(kind && name), // namespace can be empty for cluster-scoped resources
     refetchInterval: (query) => goneRecheckInterval(query, options?.refetchInterval),
@@ -2671,9 +2692,10 @@ export function useResourceWithRelationships<T>(
   namespace: string,
   name: string,
   group?: string,
+  options?: { cacheScope?: string },
 ) {
   return useQuery<ResourceWithRelationships<T>>({
-    queryKey: ["resource", kind, namespace, name, group],
+    queryKey: ["resource", kind, namespace, name, group, ...(options?.cacheScope ? [options.cacheScope] : [])],
     queryFn: () => fetchResourceWithRelationships<T>(kind, namespace, name, group),
     enabled: Boolean(kind && name),
     refetchInterval: (query) => goneRecheckInterval(query, undefined),
@@ -2694,7 +2716,7 @@ export function useResources<T>(
   kind: string,
   namespace?: string,
   group?: string,
-  options?: { enabled?: boolean; refetchInterval?: number | false },
+  options?: { enabled?: boolean; refetchInterval?: number | false; cacheScope?: string },
 ) {
   const params = new URLSearchParams();
   if (namespace) params.set("namespace", namespace);
@@ -2702,7 +2724,7 @@ export function useResources<T>(
   const queryString = params.toString();
 
   return useQuery<T[]>({
-    queryKey: ["resources", kind, group, namespace],
+    queryKey: ["resources", kind, group, namespace, ...(options?.cacheScope ? [options.cacheScope] : [])],
     queryFn: () =>
       fetchJSON(`/resources/${kind}${queryString ? `?${queryString}` : ""}`),
     enabled: (options?.enabled ?? true) && Boolean(kind),
