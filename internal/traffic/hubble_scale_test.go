@@ -10,7 +10,15 @@ import (
 
 	flowpb "github.com/cilium/cilium/api/v1/flow"
 	observerpb "github.com/cilium/cilium/api/v1/observer"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/wrapperspb"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
+	"k8s.io/utils/ptr"
 )
 
 // statusObserver reports a connected-node count, as Relay does.
@@ -153,6 +161,71 @@ func TestHubbleGetFlows_SplitsTheBudgetAcrossNodes(t *testing.T) {
 	if got := obs.got.GetNumber(); got != 250 {
 		t.Errorf("Number = %d, want the budget split over 200 nodes", got)
 	}
+}
+
+// failingStatusObserver is a Relay waiting on an unreachable node: its
+// ServerStatus fails while flows from the other nodes still arrive.
+type failingStatusObserver struct {
+	scriptedObserver
+}
+
+func (s *failingStatusObserver) ServerStatus(context.Context, *observerpb.ServerStatusRequest) (*observerpb.ServerStatusResponse, error) {
+	return nil, status.Error(codes.DeadlineExceeded, "a node did not answer")
+}
+
+func TestHubbleGetFlows_KeepsTheBudgetSplitWhenStatusFails(t *testing.T) {
+	t.Run("the last count is kept", func(t *testing.T) {
+		obs := &failingStatusObserver{scriptedObserver{responses: []*observerpb.GetFlowsResponse{flowResponse("a", "b")}}}
+		h := connectedHubble(t, obs)
+		h.nodeCount, h.nodeCountAt = 200, time.Now().Add(-2*hubbleNodeCountTTL)
+		if _, err := h.GetFlows(context.Background(), DefaultFlowOptions()); err != nil {
+			t.Fatal(err)
+		}
+		if got := obs.got.GetNumber(); got != 250 {
+			t.Errorf("Number = %d, want the budget still split over the 200 nodes last reported", got)
+		}
+	})
+
+	// The API server answers a one-item page with the count it left out.
+	pagedNodes := func(t *testing.T, remaining *int64, cont string) *fake.Clientset {
+		client := fake.NewSimpleClientset()
+		client.PrependReactor("list", "nodes", func(action k8stesting.Action) (bool, runtime.Object, error) {
+			if limit := action.(k8stesting.ListActionImpl).GetListOptions().Limit; limit != 1 {
+				t.Errorf("node list Limit = %d, want a one-item page", limit)
+			}
+			return true, &corev1.NodeList{
+				ListMeta: metav1.ListMeta{RemainingItemCount: remaining, Continue: cont},
+				Items:    []corev1.Node{{ObjectMeta: metav1.ObjectMeta{Name: "node-0"}}},
+			}, nil
+		})
+		return client
+	}
+
+	t.Run("the cluster's nodes are counted, and win over a stale count", func(t *testing.T) {
+		obs := &failingStatusObserver{scriptedObserver{responses: []*observerpb.GetFlowsResponse{flowResponse("a", "b")}}}
+		h := connectedHubble(t, obs)
+		h.nodeCount, h.nodeCountAt = 20, time.Now().Add(-2*hubbleNodeCountTTL)
+		h.k8sClient = pagedNodes(t, ptr.To[int64](99), "more")
+		if _, err := h.GetFlows(context.Background(), DefaultFlowOptions()); err != nil {
+			t.Fatal(err)
+		}
+		if got := obs.got.GetNumber(); got != 500 {
+			t.Errorf("Number = %d, want the budget split over the cluster's 100 nodes", got)
+		}
+	})
+
+	t.Run("a page without a remaining count is not a count", func(t *testing.T) {
+		obs := &failingStatusObserver{scriptedObserver{responses: []*observerpb.GetFlowsResponse{flowResponse("a", "b")}}}
+		h := connectedHubble(t, obs)
+		h.nodeCount, h.nodeCountAt = 200, time.Now().Add(-2*hubbleNodeCountTTL)
+		h.k8sClient = pagedNodes(t, nil, "more")
+		if _, err := h.GetFlows(context.Background(), DefaultFlowOptions()); err != nil {
+			t.Fatal(err)
+		}
+		if got := obs.got.GetNumber(); got != 250 {
+			t.Errorf("Number = %d, want the last count (200 nodes) kept, not a count of 1", got)
+		}
+	})
 }
 
 func TestHubbleGetFlows_KeepsTheNewestFlowsWithinTheBudget(t *testing.T) {
