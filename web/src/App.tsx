@@ -58,7 +58,7 @@ import { openWhatsNew, useWhatsNewStatus, WhatsNew } from './components/whats-ne
 import { useUsageData, useUsageRecording } from './api/usage-data'
 import { UsageDataPrompt } from './components/usage-data/UsageDataPrompt'
 import { ShortcutHelpOverlay } from './components/ui/ShortcutHelpOverlay'
-import { DiagnosticsOverlay } from './components/ui/DiagnosticsOverlay'
+import { DiagnosticsOverlay, type DiagnosticsFocus } from './components/ui/DiagnosticsOverlay'
 import { useEventSource } from './hooks/useEventSource'
 import { debugNamespaceLog, refetchOnResourceEvents, resourceEventKey, useNamespaces, useNamespaceScope, useSetActiveNamespace, useSwitchContext, useAuthMe, useAudit, useClusterInfo } from './api/client'
 import { buildAuditSeverityMap } from './utils/auditBadges'
@@ -663,6 +663,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
 
   // Diagnostics overlay state
   const [showDiagnostics, setShowDiagnostics] = useState(false)
+  const [diagnosticsFocus, setDiagnosticsFocus] = useState<DiagnosticsFocus>()
 
   // The peek drawer "expanded" into a fullscreen overlay = ?full=1 with a selected
   // resource, on ANY view (resources list, topology graph, GitOps, Applications…) —
@@ -979,7 +980,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
       category: 'General' as const,
       scope: 'global' as const,
       allowInInputs: true,
-      handler: () => setShowDiagnostics(prev => !prev),
+      handler: () => { setDiagnosticsFocus(undefined); setShowDiagnostics(prev => !prev) },
     },
     // Settings exposes local-binary controls that don't apply to embedded hosts.
     // Register the shortcut only when standalone (matching the gear button) —
@@ -2300,6 +2301,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
               setNamespaces([ns])
               setActiveNamespace.mutate({ namespaces: [ns] })
             }}
+            onOpenDiagnostics={() => { setDiagnosticsFocus('timeline'); setShowDiagnostics(true) }}
           />
         )}
 
@@ -2575,7 +2577,7 @@ function AppInner({ manageDocumentTitle = false, documentTitleSuffix, onClusterL
       {helpOverlay.shouldRender && <ShortcutHelpOverlay isOpen={helpOverlay.isOpen} onClose={() => setShowHelp(false)} currentView={mainView} />}
 
       {/* Diagnostics overlay */}
-      {diagnosticsOverlay.shouldRender && <DiagnosticsOverlay isOpen={diagnosticsOverlay.isOpen} onClose={() => setShowDiagnostics(false)} />}
+      {diagnosticsOverlay.shouldRender && <DiagnosticsOverlay isOpen={diagnosticsOverlay.isOpen} focus={diagnosticsFocus} onClose={() => { setShowDiagnostics(false); setDiagnosticsFocus(undefined) }} />}
 
       {/* Settings dialog — My permissions is rendered inline in its own section */}
       <SettingsDialog
