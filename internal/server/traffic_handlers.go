@@ -84,8 +84,16 @@ func flowVisibleForNamespaces(flow traffic.Flow, allowed map[string]bool) bool {
 		(flow.Destination.Namespace != "" && allowed[flow.Destination.Namespace])
 }
 
+const recentSourcesMaxAge = 2 * time.Minute
+
 // handleGetTrafficSources returns available traffic sources and recommendations
 // GET /api/traffic/sources
+//
+// ?recent=1 accepts a detection up to recentSourcesMaxAge old, so browsing
+// workloads or opening the Traffic view from one doesn't re-probe every source.
+// Callers detect afresh when the answer will be shown as setup advice, or when
+// connecting to the reused source failed. A Radar without this parameter
+// ignores it and detects, as before.
 func (s *Server) handleGetTrafficSources(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -95,7 +103,13 @@ func (s *Server) handleGetTrafficSources(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	response, err := manager.DetectSources(ctx)
+	var response *traffic.SourcesResponse
+	var err error
+	if r.URL.Query().Get("recent") == "1" {
+		response, err = manager.RecentSources(ctx, recentSourcesMaxAge)
+	} else {
+		response, err = manager.DetectSources(ctx)
+	}
 	if err != nil {
 		log.Printf("[traffic] Error detecting sources: %v", err)
 		s.writeError(w, http.StatusInternalServerError, "Failed to detect traffic sources")
