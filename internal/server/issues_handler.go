@@ -380,12 +380,21 @@ func (s *Server) clusterScopedSubjectIssuesWithheld(r *http.Request, provider is
 	if namespace != "" || auth.UserFromContext(r.Context()) == nil {
 		return 0
 	}
-	resolvedGroup, _, clusterScoped, ok := k8s.ResolveChangeGVR(kind, group)
+	resolvedGroup, resource, clusterScoped, ok := k8s.ResolveChangeGVR(kind, group)
 	if !ok || !clusterScoped || s.issueClusterScopedAccess(r)(kind, resolvedGroup) {
 		return 0
 	}
 	subjectKind := func(k, g string) bool {
 		return strings.EqualFold(k, kind) && resourceid.NormalizeGroup(g) == resourceid.NormalizeGroup(resolvedGroup)
+	}
+	canReadEvidence := s.issueEvidenceAccess(r)
+	// The get-authorized subject is counted, never returned; controller
+	// inventories still use the caller's permissions.
+	countSubjectEvidence := func(read issues.EvidenceRead) bool {
+		if read.Group == resolvedGroup && read.Resource == resource && read.Namespace == "" && read.Verb == "list" {
+			return true
+		}
+		return canReadEvidence(read)
 	}
 	all := issues.Compose(provider, issues.Filters{
 		SkipPodTemplateContext: true,
@@ -394,7 +403,7 @@ func (s *Server) clusterScopedSubjectIssuesWithheld(r *http.Request, provider is
 		CanReadClusterScoped:   subjectKind,
 		CanReadRelated:         s.issueRelatedResourceAccess(r),
 		CanReadSubject:         s.issueSubjectAccess(r),
-		CanReadEvidence:        s.issueEvidenceAccess(r),
+		CanReadEvidence:        countSubjectEvidence,
 		Grouped:                true,
 	})
 	seen := make(map[string]bool, len(returned))
