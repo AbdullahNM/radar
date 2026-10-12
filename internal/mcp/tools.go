@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -2775,13 +2776,15 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 		if namespaces != nil && len(namespaces) == 0 {
 			// No namespace access: leave the zero-value Helm summary.
 		} else {
-			releases, err := helmClient.ListReleasesAcrossNamespaces(namespaces, username, groups)
+			releases, err := helmClient.ListReleasesAcrossNamespaces(ctx, namespaces, username, groups)
 			if err != nil {
 				// Not fatal for the dashboard — a viewer with no helm access
 				// still sees everything else. Surface to LLM consumers via
 				// Unavailable so they don't confidently report "Total=0
 				// releases" when in fact the read failed.
-				log.Printf("[mcp] Dashboard helm list failed: %v", err)
+				if !errors.Is(ctx.Err(), context.Canceled) {
+					log.Printf("[mcp] Dashboard helm list failed: %v", err)
+				}
 				d.HelmReleases.Unavailable = true
 				if helm.IsForbiddenError(err) {
 					d.HelmReleases.UnavailableReason = "RBAC denied: caller cannot list Helm release secrets in this scope."
@@ -3149,9 +3152,9 @@ func nativeHelmIssuesForContext(ctx context.Context, namespaces []string, filter
 	if helmNamespaces == nil {
 		helmNamespaces = resolveHelmListNamespaces(ctx, "")
 	}
-	releases, err := helmClient.ListReleasesAcrossNamespaces(helmNamespaces, username, groups)
+	releases, err := helmClient.ListIssueReleasesAcrossNamespaces(ctx, helmNamespaces, username, groups)
 	if err != nil {
-		if !helm.IsForbiddenError(err) {
+		if !errors.Is(ctx.Err(), context.Canceled) && !helm.IsForbiddenError(err) {
 			log.Printf("[mcp] Failed to list Helm releases for issue stream: %v", err)
 		}
 		return nil
