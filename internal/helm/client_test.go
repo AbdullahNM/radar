@@ -487,6 +487,30 @@ func TestHelmReleaseRowsFromStorageSnapshot_SkipsMalformedReleaseSecret(t *testi
 	}
 }
 
+func TestHelmReleaseStorageSnapshotFromSecrets_KeepsRecordedChartSource(t *testing.T) {
+	rel := helmTestRelease("web", "demo", 1, release.StatusDeployed, "Install complete")
+	secret := helmReleaseSecret(t, "demo", rel, false)
+	recorded := &ChartSourceCandidate{Type: "repository", Reference: "podinfo", URL: "https://stefanprodan.github.io/podinfo"}
+	for k, v := range chartSourceLabels(recorded) {
+		secret.Labels[k] = v
+	}
+
+	snapshot, err := helmReleaseStorageSnapshotFromSecrets(context.Background(), []corev1.Secret{*secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.latest) != 1 {
+		t.Fatalf("len(latest) = %d, want 1", len(snapshot.latest))
+	}
+	source, ok := chartSourceFromRelease(snapshot.latest[0])
+	if !ok {
+		t.Fatalf("recorded chart source not visible on the decoded release; labels = %#v", snapshot.latest[0].Labels)
+	}
+	if source.Reference != "podinfo" || source.URL != recorded.URL {
+		t.Fatalf("source = %#v, want podinfo at %s", source, recorded.URL)
+	}
+}
+
 func TestHelmReleaseRowsFromStorageSnapshot_CapsOperations(t *testing.T) {
 	revisions := []*release.Release{
 		helmTestRelease("repeat", "demo", 1, release.StatusSuperseded, "Install complete"),

@@ -192,6 +192,8 @@ func TestCanonicalClassicRepositoryURLAppliesExistingAddressPolicy(t *testing.T)
 		{name: "link-local IPv4 with port", url: "http://169.254.1.2:8080/charts", wantErr: true},
 		{name: "link-local IPv6", url: "http://[fe80::1]/charts", wantErr: true},
 		{name: "link-local IPv6 with port", url: "http://[fe80::1]:8080/charts", wantErr: true},
+		{name: "link-local IPv6 with zone", url: "http://[fe80::1%25eth0]/charts", wantErr: true},
+		{name: "link-local IPv6 with zone and port", url: "http://[fe80::1%25eth0]:8080/charts", wantErr: true},
 		{name: "loopback remains allowed by policy", url: "http://127.0.0.1:8080/charts"},
 		{name: "localhost remains allowed by policy", url: "http://localhost:8080/charts"},
 		{name: "private address remains allowed by policy", url: "http://10.0.0.5/charts"},
@@ -290,6 +292,50 @@ func TestSourceStatusReadOnlyAndManualAssociation(t *testing.T) {
 	}
 }
 
+func TestSetSourceMovesRecordedRepositoryToLocalNameWhenVersionPruned(t *testing.T) {
+	withOCISources(t, nil)
+	recordedServer := chartSourceTestServer(t, "1.3.0")
+	defer recordedServer.Close()
+	otherServer := chartSourceTestServer(t, "9.9.9")
+	defer otherServer.Close()
+	c := newChartSourceTestClient(t)
+	// The recorded alias points at a different repository on this machine, and
+	// neither repository lists the installed 1.2.3 any more.
+	if _, err := c.ensureClassicRepository(otherServer.URL, "podinfo"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.ensureClassicRepository(recordedServer.URL, "podinfo-2"); err != nil {
+		t.Fatal(err)
+	}
+	recordedURL, _ := canonicalClassicRepositoryURL(recordedServer.URL)
+	recorded := ChartSourceCandidate{Type: "repository", Reference: "podinfo", URL: recordedURL}
+	rel := &release.Release{Name: "app", Namespace: "ns", Version: 1, Labels: chartSourceLabels(&recorded), Info: &release.Info{Status: release.StatusDeployed}, Chart: &chart.Chart{Metadata: &chart.Metadata{Name: "app", Version: "1.2.3"}}}
+	cfg := chartSourceActionConfig(t, rel)
+
+	otherURL, _ := canonicalClassicRepositoryURL(otherServer.URL)
+	if err := c.setSourceWith(cfg, rel.Name, ChartSourceCandidate{Type: "repository", Reference: "podinfo", URL: otherURL}); err == nil {
+		t.Fatal("a repository other than the recorded one was associated")
+	}
+	if err := c.setSourceWith(cfg, rel.Name, ChartSourceCandidate{Type: "repository", Reference: "podinfo", URL: recordedURL}); err == nil {
+		t.Fatal("the recorded URL was associated under a local name that points elsewhere")
+	}
+	if err := c.setSourceWith(cfg, rel.Name, ChartSourceCandidate{Type: "repository", Reference: "podinfo-2", URL: recordedURL}); err != nil {
+		t.Fatalf("recorded repository under its local name: %v", err)
+	}
+	stored, err := cfg.Releases.Last(rel.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, ok := chartSourceFromRelease(stored)
+	if !ok || got.Reference != "podinfo-2" || got.URL != recordedURL {
+		t.Fatalf("recorded source after association = %+v", got)
+	}
+	info := &UpgradeInfo{CurrentVersion: "1.2.3"}
+	if !c.applyRecordedUpgrade(info, *got, "app", "1.2.3", nil) || info.RepositoryName != "podinfo-2" || info.LatestVersion != "1.3.0" {
+		t.Fatalf("upgrade after association = %+v", info)
+	}
+}
+
 func TestRecordedButUnavailableIsDistinctFromAbsentProvenance(t *testing.T) {
 	withOCISources(t, nil)
 	c := newChartSourceTestClient(t)
@@ -368,28 +414,6 @@ func TestRejectedPreInstallDoesNotPersistSource(t *testing.T) {
 	}
 }
 
-func TestCandidateOrderingStable(t *testing.T) {
-	candidates := []ChartSourceCandidate{{Type: "repository", Reference: "b"}, {Type: "oci", Reference: "z"}, {Type: "repository", Reference: "a"}}
-	slices.SortFunc(candidates, func(a, b ChartSourceCandidate) int {
-		if a.Type != b.Type {
-			if a.Type < b.Type {
-				return -1
-			}
-			return 1
-		}
-		if a.Reference < b.Reference {
-			return -1
-		}
-		if a.Reference > b.Reference {
-			return 1
-		}
-		return 0
-	})
-	if candidates[0].Reference != "z" || candidates[1].Reference != "a" || candidates[2].Reference != "b" {
-		t.Fatalf("unexpected ordering: %+v", candidates)
-	}
-}
-
 func TestRepositoryConfigurationPersistsAcrossClientRestart(t *testing.T) {
 	server := chartSourceTestServer(t, "1.2.3")
 	defer server.Close()
@@ -404,5 +428,175 @@ func TestRepositoryConfigurationPersistsAcrossClientRestart(t *testing.T) {
 	}
 	if _, err := os.Stat(c.settings.RepositoryConfig); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRecordedUpgradeSurvivesPrunedInstalledVersion(t *testing.T) {
+	server := chartSourceTestServer(t, "2.0.0")
+	defer server.Close()
+	c := newChartSourceTestClient(t)
+	if _, err := c.ensureClassicRepository(server.URL, "repo"); err != nil {
+		t.Fatal(err)
+	}
+	info := &UpgradeInfo{CurrentVersion: "1.0.0"}
+	source := ChartSourceCandidate{Type: "repository", Reference: "repo", URL: server.URL}
+	if !c.applyRecordedUpgrade(info, source, "app", "1.0.0", nil) {
+		t.Fatal("recorded source rejected because the index no longer lists the installed version")
+	}
+	if info.LatestVersion != "2.0.0" || !info.UpdateAvailable || info.RepositoryName != "repo" {
+		t.Fatalf("upgrade info = %+v", info)
+	}
+}
+
+func TestInstallFromCredentialedDirectURLSkipsProvenance(t *testing.T) {
+	c := newChartSourceTestClient(t)
+	for _, repository := range []string{"https://reader:secret@charts.example.test/private", "https://charts.example.test/private?token=secret"} {
+		source, err := c.installChartSource(&InstallRequest{Repository: repository, ChartName: "app"})
+		if err != nil || source != nil {
+			t.Fatalf("%s: source = %+v, err = %v; want install to proceed without provenance", repository, source, err)
+		}
+	}
+	if source, err := c.installChartSource(&InstallRequest{Repository: "http://reader:secret@169.254.169.254/charts", ChartName: "app"}); err == nil || source != nil {
+		t.Fatalf("credentialed link-local direct URL = %+v, %v; want rejection", source, err)
+	}
+}
+
+func TestInstallFromCredentialedAliasSkipsProvenance(t *testing.T) {
+	c := newChartSourceTestClient(t)
+	f := repo.NewFile()
+	f.Update(&repo.Entry{Name: "private", URL: "https://user:secret@charts.example.test"})
+	if err := f.WriteFile(c.settings.RepositoryConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source, err := c.installChartSource(&InstallRequest{Repository: "private", ChartName: "app"})
+	if err != nil || source != nil {
+		t.Fatalf("source = %+v, err = %v; want install to proceed without provenance", source, err)
+	}
+	if labels := chartSourceLabels(source); labels != nil {
+		t.Fatalf("labels for a missing source = %v", labels)
+	}
+}
+
+func TestSetSourceRefusesPendingRelease(t *testing.T) {
+	withOCISources(t, nil)
+	server := chartSourceTestServer(t, "1.2.3")
+	defer server.Close()
+	c := newChartSourceTestClient(t)
+	if _, err := c.ensureClassicRepository(server.URL, "repo"); err != nil {
+		t.Fatal(err)
+	}
+	rel := &release.Release{Name: "app", Namespace: "ns", Version: 2, Info: &release.Info{Status: release.StatusPendingUpgrade}, Chart: &chart.Chart{Metadata: &chart.Metadata{Name: "app", Version: "1.2.3"}}}
+	cfg := chartSourceActionConfig(t, rel)
+	err := c.setSourceWith(cfg, rel.Name, ChartSourceCandidate{Type: "repository", Reference: "repo", URL: server.URL})
+	if !errors.Is(err, errReleaseChanging) {
+		t.Fatalf("association during a pending upgrade = %v, want errReleaseChanging", err)
+	}
+	stored, _ := cfg.Releases.Get(rel.Name, rel.Version)
+	if stored.Info.Status != release.StatusPendingUpgrade {
+		t.Fatalf("pending release status rewritten to %s", stored.Info.Status)
+	}
+	if _, ok := chartSourceFromRelease(stored); ok {
+		t.Fatal("pending release gained provenance")
+	}
+}
+
+func TestEnsureClassicRepositoryReusesConfiguredCredentials(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if user, pass, ok := r.BasicAuth(); !ok || user != "reader" || pass != "secret" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		_, _ = w.Write([]byte("apiVersion: v1\nentries: {}\n"))
+	}))
+	defer server.Close()
+	c := newChartSourceTestClient(t)
+	f := repo.NewFile()
+	f.Update(&repo.Entry{Name: "private", URL: server.URL, Username: "reader", Password: "secret"})
+	if err := f.WriteFile(c.settings.RepositoryConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	name, err := c.ensureClassicRepository(server.URL+"/", "another-name")
+	if err != nil || name != "private" {
+		t.Fatalf("re-adding a configured private repository = %q, %v", name, err)
+	}
+}
+
+func TestInstallFromBlockedAliasStillFails(t *testing.T) {
+	c := newChartSourceTestClient(t)
+	f := repo.NewFile()
+	f.Update(&repo.Entry{Name: "metadata", URL: "http://169.254.169.254/charts"})
+	if err := f.WriteFile(c.settings.RepositoryConfig, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if source, err := c.installChartSource(&InstallRequest{Repository: "metadata", ChartName: "app"}); err == nil || source != nil {
+		t.Fatalf("link-local alias = %+v, %v; want the address policy to reject it", source, err)
+	}
+}
+
+func TestCachedTagListerListsEachReferenceOnce(t *testing.T) {
+	calls := 0
+	inner := tagListerFunc(func(ref string) ([]string, error) {
+		calls++
+		return []string{"1.0.0"}, nil
+	})
+	lister := cachedTagLister{inner: inner, cache: map[string][]string{}}
+	for range 3 {
+		if _, err := lister.Tags("registry.example.test/charts/app"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if calls != 1 {
+		t.Fatalf("registry listed %d times, want 1", calls)
+	}
+}
+
+type tagListerFunc func(string) ([]string, error)
+
+func (f tagListerFunc) Tags(ref string) ([]string, error) { return f(ref) }
+
+func TestInstallFromCredentialedBlockedAliasStillFails(t *testing.T) {
+	for _, rawURL := range []string{"http://user:secret@169.254.169.254/charts", "http://[fe80::1]:8080/charts?token=x"} {
+		c := newChartSourceTestClient(t)
+		f := repo.NewFile()
+		f.Update(&repo.Entry{Name: "blocked", URL: rawURL})
+		if err := f.WriteFile(c.settings.RepositoryConfig, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if source, err := c.installChartSource(&InstallRequest{Repository: "blocked", ChartName: "app"}); err == nil || source != nil {
+			t.Fatalf("%s = %+v, %v; want the address policy to reject it", rawURL, source, err)
+		}
+	}
+}
+
+func TestSetSourceRefusesUninstallingRelease(t *testing.T) {
+	c := newChartSourceTestClient(t)
+	rel := &release.Release{Name: "app", Namespace: "ns", Version: 1, Info: &release.Info{Status: release.StatusUninstalling}, Chart: &chart.Chart{Metadata: &chart.Metadata{Name: "app", Version: "1.2.3"}}}
+	err := c.setSourceWith(chartSourceActionConfig(t, rel), rel.Name, ChartSourceCandidate{Type: "repository", Reference: "repo", URL: "https://charts.example.test"})
+	if !errors.Is(err, errReleaseChanging) {
+		t.Fatalf("association during uninstall = %v, want errReleaseChanging", err)
+	}
+}
+
+func TestWriteRepositoryFileAtomicReplacesWithoutLeftovers(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "repositories.yaml")
+	for _, name := range []string{"first", "second"} {
+		f := repo.NewFile()
+		f.Update(&repo.Entry{Name: name, URL: "https://charts.example.test/" + name})
+		if err := writeRepositoryFileAtomic(f, path); err != nil {
+			t.Fatal(err)
+		}
+		loaded, err := repo.LoadFile(path)
+		if err != nil || !loaded.Has(name) || len(loaded.Repositories) != 1 {
+			t.Fatalf("after writing %q: %+v, %v", name, loaded, err)
+		}
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Mode().Perm() != 0o600 {
+		t.Fatalf("config mode = %v, %v; want 0600", info, err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("directory holds %d entries, want only the config: %v", len(entries), err)
 	}
 }

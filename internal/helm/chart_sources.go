@@ -5,6 +5,7 @@ import (
 	"encoding/base32"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -29,11 +30,14 @@ const (
 	chartSourceMaxChunks = 16
 )
 
+const recordedSourceUnavailableMessage = "the recorded chart source is not configured on this Radar installation or lists no versions of this chart"
+
 var (
 	repositoryNamePartRE        = regexp.MustCompile(`[^a-z0-9._-]+`)
 	errInvalidChartSource       = errors.New("invalid chart source")
 	errInvalidRepositoryRequest = errors.New("invalid repository request")
 	errRepositoryConflict       = errors.New("repository configuration conflict")
+	errReleaseChanging          = errors.New("release is changing")
 )
 
 func addChartSourceLabelChunks(labels map[string]string, prefix, value string) bool {
@@ -235,6 +239,25 @@ func stableOCIChartReference(raw string) (string, error) {
 	return "oci://" + parsedReference.Registry + "/" + parsedReference.Repository, nil
 }
 
+// recordableRepositoryURL returns the canonical URL to record for an install
+// from a classic repository. A URL that embeds credentials or a query cannot be
+// recorded safely, so it returns "" with no error and the install goes ahead
+// without provenance, as it did before provenance existed. Link-local hosts are
+// still rejected.
+func recordableRepositoryURL(rawURL string) (string, error) {
+	repoURL, err := canonicalClassicRepositoryURL(rawURL)
+	if err == nil {
+		return repoURL, nil
+	}
+	if parsed, parseErr := url.Parse(strings.TrimSpace(rawURL)); parseErr == nil && (parsed.User != nil || parsed.RawQuery != "") {
+		if hostErr := rejectLinkLocalHost(parsed.Host); hostErr != nil {
+			return "", fmt.Errorf("%w: %v", errInvalidRepositoryRequest, hostErr)
+		}
+		return "", nil
+	}
+	return "", err
+}
+
 // installChartSource derives provenance without mutating source configuration.
 // Callers invoke it only after preInstallCheck has accepted the install.
 func (c *Client) installChartSource(req *InstallRequest) (*ChartSourceCandidate, error) {
@@ -250,9 +273,13 @@ func (c *Client) installChartSource(req *InstallRequest) (*ChartSourceCandidate,
 		return &ChartSourceCandidate{Type: "oci", Reference: stableReference}, nil
 	}
 	if strings.HasPrefix(req.Repository, "http://") || strings.HasPrefix(req.Repository, "https://") {
-		repoURL, err := canonicalClassicRepositoryURL(req.Repository)
+		repoURL, err := recordableRepositoryURL(req.Repository)
 		if err != nil {
 			return nil, err
+		}
+		if repoURL == "" {
+			log.Printf("[helm] not recording chart source for a direct repository URL: it carries credentials or a query")
+			return nil, nil
 		}
 		name := normalizedRepositoryName(req.RepositoryName)
 		if name == "" {
@@ -268,17 +295,22 @@ func (c *Client) installChartSource(req *InstallRequest) (*ChartSourceCandidate,
 	if entry == nil {
 		return nil, fmt.Errorf("%w: repository %q not found", errInvalidRepositoryRequest, req.Repository)
 	}
-	repoURL, err := canonicalClassicRepositoryURL(entry.URL)
+	repoURL, err := recordableRepositoryURL(entry.URL)
 	if err != nil {
 		return nil, err
+	}
+	if repoURL == "" {
+		log.Printf("[helm] not recording chart source for repository %q: its URL carries credentials or a query", entry.Name)
+		return nil, nil
 	}
 	return &ChartSourceCandidate{Type: "repository", Reference: entry.Name, URL: repoURL}, nil
 }
 
 // ensureClassicRepository downloads into an isolated directory before
-// acquiring c.mu. The accepted alias is revalidated under the lock, then the
-// repository config is persisted before the staged index is atomically
-// published into the shared cache.
+// acquiring c.mu. The accepted alias is revalidated under the lock, the staged
+// index is published into the shared cache, and only then is the repository
+// config replaced, atomically, so readers that do not take c.mu never see a
+// truncated config or an entry whose index is missing.
 func (c *Client) ensureClassicRepository(rawURL, preferredName string) (string, error) {
 	repoURL, err := canonicalClassicRepositoryURL(rawURL)
 	if err != nil {
@@ -291,18 +323,22 @@ func (c *Client) ensureClassicRepository(rawURL, preferredName string) (string, 
 	// Reuse the current machine's alias when the same canonical URL is already
 	// configured. This snapshot is local I/O only; no network call occurs while
 	// either mutex mode is held.
+	entry := &repo.Entry{Name: name, URL: repoURL}
 	c.mu.RLock()
 	if existingFile, loadErr := repo.LoadFile(c.settings.RepositoryConfig); loadErr == nil {
 		for _, existing := range existingFile.Repositories {
 			existingURL, canonicalErr := canonicalClassicRepositoryURL(existing.URL)
 			if canonicalErr == nil && existingURL == repoURL {
+				// Download with the configured entry so its credentials and TLS
+				// settings apply. They never reach labels or responses.
+				configured := *existing
+				entry = &configured
 				name = existing.Name
 				break
 			}
 		}
 	}
 	c.mu.RUnlock()
-	entry := &repo.Entry{Name: name, URL: repoURL}
 	if err := os.MkdirAll(c.settings.RepositoryCache, 0o755); err != nil {
 		return "", fmt.Errorf("prepare repository cache: %w", err)
 	}
@@ -346,13 +382,35 @@ func (c *Client) ensureClassicRepository(rawURL, preferredName string) (string, 
 		return "", fmt.Errorf("%w: repository name %q is already configured with a different URL", errRepositoryConflict, name)
 	}
 	f.Update(entry)
-	if err := f.WriteFile(c.settings.RepositoryConfig, 0o600); err != nil {
-		return "", fmt.Errorf("failed to persist Helm repository: %w", err)
-	}
 	if err := publishStagedRepositoryCache(stageDir, stagedIndex, c.settings.RepositoryCache); err != nil {
 		return "", err
 	}
+	if err := writeRepositoryFileAtomic(f, c.settings.RepositoryConfig); err != nil {
+		return "", fmt.Errorf("failed to persist Helm repository: %w", err)
+	}
 	return name, nil
+}
+
+// writeRepositoryFileAtomic replaces the repository config by rename. Helm's
+// own WriteFile truncates the file in place.
+func writeRepositoryFileAtomic(f *repo.File, path string) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(dir, ".repositories-*.yaml")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	defer os.Remove(tmpPath)
+	if err := f.WriteFile(tmpPath, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, path)
 }
 
 func publishStagedRepositoryCache(stageDir, stagedIndex, cacheDir string) error {
@@ -456,8 +514,14 @@ func (c *Client) configuredRepositoryForSource(source ChartSourceCandidate) *rep
 }
 
 func (c *Client) applyRecordedUpgrade(info *UpgradeInfo, source ChartSourceCandidate, chartName, currentVersion string, lister ociTagLister) bool {
-	versions := c.candidateVersions(source, chartName, lister)
-	if !slices.Contains(versions, currentVersion) || len(versions) == 0 {
+	return c.applyRecordedVersions(info, source, c.candidateVersions(source, chartName, lister), currentVersion)
+}
+
+// applyRecordedVersions fills info from the recorded source's versions. The
+// installed version need not still be listed: provenance already identifies
+// the source, and repositories routinely prune old versions from their index.
+func (c *Client) applyRecordedVersions(info *UpgradeInfo, source ChartSourceCandidate, versions []string, currentVersion string) bool {
+	if len(versions) == 0 {
 		return false
 	}
 	info.LatestVersion = versions[0]
@@ -629,6 +693,9 @@ func (c *Client) setSourceWith(actionConfig *action.Configuration, name string, 
 	if rel.Chart == nil || rel.Chart.Metadata == nil {
 		return fmt.Errorf("release has no usable chart metadata")
 	}
+	if rel.Info == nil || releaseChanging(rel.Info.Status) {
+		return fmt.Errorf("%w: another Helm operation on %s is in progress or just finished; try again", errReleaseChanging, name)
+	}
 	candidates, err := c.configuredChartSourceCandidates(rel.Chart.Metadata.Name, rel.Chart.Metadata.Version, nil)
 	if err != nil {
 		return err
@@ -641,10 +708,53 @@ func (c *Client) setSourceWith(actionConfig *action.Configuration, name string, 
 		}
 	}
 	if persisted == nil {
+		persisted = c.recordedRepositoryUnderLocalName(rel, selected)
+	}
+	if persisted == nil {
 		return fmt.Errorf("%w: selected source does not publish %s version %s", errInvalidChartSource, rel.Chart.Metadata.Name, rel.Chart.Metadata.Version)
 	}
-	rel.Labels = mergeChartSourceLabels(rel.Labels, persisted)
-	return actionConfig.Releases.Update(rel)
+	// Update rewrites the whole release record. Refuse while another operation
+	// is in flight, and re-read so a revision written while sources were being
+	// checked is not overwritten with this stale copy.
+	latest, err := actionConfig.Releases.Last(name)
+	if err != nil {
+		return err
+	}
+	if latest.Version != rel.Version || latest.Info == nil || releaseChanging(latest.Info.Status) ||
+		latest.Chart == nil || latest.Chart.Metadata == nil ||
+		latest.Chart.Metadata.Name != rel.Chart.Metadata.Name || latest.Chart.Metadata.Version != rel.Chart.Metadata.Version ||
+		!latest.Info.FirstDeployed.Equal(rel.Info.FirstDeployed) {
+		return fmt.Errorf("%w: another Helm operation on %s is in progress or just finished; try again", errReleaseChanging, name)
+	}
+	latest.Labels = mergeChartSourceLabels(latest.Labels, persisted)
+	return actionConfig.Releases.Update(latest)
+}
+
+// recordedRepositoryUnderLocalName accepts the repository the release already
+// records, configured here under selected's name, without requiring the
+// installed version: provenance already identifies the source, and the version
+// may have been pruned from the index since (see applyRecordedVersions). This
+// moves the record to a local name when the recorded one points elsewhere.
+func (c *Client) recordedRepositoryUnderLocalName(rel *release.Release, selected ChartSourceCandidate) *ChartSourceCandidate {
+	recorded, ok := chartSourceFromRelease(rel)
+	if !ok || recorded.Type != "repository" || recorded.URL == "" || selected.Type != "repository" {
+		return nil
+	}
+	selectedURL, err := canonicalClassicRepositoryURL(selected.URL)
+	if err != nil || selectedURL != recorded.URL {
+		return nil
+	}
+	configured := c.configuredRepositoryForSource(ChartSourceCandidate{Type: "repository", Reference: selected.Reference, URL: selectedURL})
+	if configured == nil || configured.Name != selected.Reference {
+		return nil
+	}
+	return &ChartSourceCandidate{Type: "repository", Reference: configured.Name, URL: recorded.URL}
+}
+
+// releaseChanging reports statuses that mean another Helm operation owns the
+// release record right now.
+func releaseChanging(status release.Status) bool {
+	return status.IsPending() || status == release.StatusUninstalling
 }
 
 func (c *Client) SetSource(namespace, name string, selected ChartSourceCandidate) error {

@@ -1032,7 +1032,9 @@ func chartSourceErrorStatus(err error) int {
 	switch {
 	case errors.Is(err, driver.ErrReleaseNotFound):
 		return http.StatusNotFound
-	case errors.Is(err, errRepositoryConflict):
+	case isReleaseReadForbidden(err):
+		return http.StatusForbidden
+	case errors.Is(err, errRepositoryConflict), errors.Is(err, errReleaseChanging):
 		return http.StatusConflict
 	case errors.Is(err, errInvalidChartSource), errors.Is(err, errInvalidRepositoryRequest):
 		return http.StatusBadRequest

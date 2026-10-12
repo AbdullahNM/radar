@@ -124,8 +124,10 @@ func (c *Client) PrepareFreshInstall(ctx context.Context, req *InstallRequest, m
 	if err != nil {
 		return nil, fmt.Errorf("record chart source: %w", err)
 	}
-	if err := validateChartSourceCandidate(request.resolvedSource); err != nil {
-		return nil, err
+	if request.resolvedSource != nil {
+		if err := validateChartSourceCandidate(request.resolvedSource); err != nil {
+			return nil, err
+		}
 	}
 	dryRun, err := runServerDryRun(ctx, actionConfig, &request, loaded)
 	if err != nil {

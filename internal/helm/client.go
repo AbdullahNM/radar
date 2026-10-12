@@ -1544,6 +1544,10 @@ func helmReleaseStorageSnapshotFromSecrets(ctx context.Context, secrets []corev1
 			log.Printf("[helm] failed to decode release secret %s/%s: %v", secret.Namespace, secret.Name, err)
 			continue
 		}
+		// Helm stores Release.Labels on the Secret, not in the encoded payload.
+		// Restore them like Helm's own List does, so the batch upgrade check sees
+		// the recorded chart source.
+		rel.Labels = secret.Labels
 		snapshot.storageNamespaces[releaseStorageKey(rel)] = secret.Namespace
 
 		historyKey := releaseHistoryKey(rel)
@@ -2142,7 +2146,7 @@ func (c *Client) checkForUpgrade(namespace, name, username string, groups []stri
 		if c.applyRecordedUpgrade(info, *recorded, chartName, currentVersion, nil) {
 			return info, nil
 		}
-		markUpgradeSourceIssue(info, UpgradeSourceIssueUnavailable, "the recorded chart source is not configured or does not publish the installed version")
+		markUpgradeSourceIssue(info, UpgradeSourceIssueUnavailable, recordedSourceUnavailableMessage)
 		return info, nil
 	}
 
@@ -3342,6 +3346,30 @@ func (c *Client) batchCheckUpgrades(ctx context.Context, namespace, username str
 		chartName := rel.Chart.Metadata.Name
 		info := &UpgradeInfo{CurrentVersion: currentVersion}
 
+		// Recorded provenance decides, exactly as in checkForUpgrade, so the list
+		// never advertises an upgrade from a source the drawer would refuse.
+		if recorded, ok := chartSourceFromRelease(rel); ok {
+			var versions []string
+			if recorded.Type == "repository" {
+				if configured := c.configuredRepositoryForSource(*recorded); configured != nil {
+					versions = sortVersionsDesc(chartAllVersions[chartName][configured.Name])
+				}
+			} else if len(ListOCISources()) > 0 {
+				if !ociReady {
+					ociLister = c.newRegistryClient()
+					ociReady = true
+				}
+				if ociLister != nil {
+					versions = c.candidateVersions(*recorded, chartName, cachedTagLister{ociLister, tagCache})
+				}
+			}
+			if !c.applyRecordedVersions(info, *recorded, versions, currentVersion) {
+				markUpgradeSourceIssue(info, UpgradeSourceIssueUnavailable, recordedSourceUnavailableMessage)
+			}
+			result.Releases[key] = info
+			continue
+		}
+
 		baseCandidates, ok := chartRepoVersions[chartName]
 		if !ok {
 			applyNoClassicCandidateUpgrade(info, noClassicRepos, indexLoadFailed, len(ListOCISources()) > 0, func() bool {
@@ -3933,8 +3961,10 @@ func (c *Client) installWith(actionConfig *action.Configuration, req *InstallReq
 	if err != nil {
 		return nil, fmt.Errorf("failed to record chart source: %w", err)
 	}
-	if err := validateChartSourceCandidate(resolvedSource); err != nil {
-		return nil, err
+	if resolvedSource != nil {
+		if err := validateChartSourceCandidate(resolvedSource); err != nil {
+			return nil, err
+		}
 	}
 	req.resolvedSource = resolvedSource
 
@@ -4128,8 +4158,10 @@ func (c *Client) installWithProgressUsing(actionConfig *action.Configuration, re
 	if err != nil {
 		return nil, fmt.Errorf("failed to record chart source: %w", err)
 	}
-	if err := validateChartSourceCandidate(resolvedSource); err != nil {
-		return nil, err
+	if resolvedSource != nil {
+		if err := validateChartSourceCandidate(resolvedSource); err != nil {
+			return nil, err
+		}
 	}
 	req.resolvedSource = resolvedSource
 

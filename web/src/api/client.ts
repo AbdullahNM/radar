@@ -6226,6 +6226,7 @@ export function useSetHelmSource(namespace: string, releaseName: string) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["helm-source-status", namespace, releaseName] });
       queryClient.invalidateQueries({ queryKey: ["helm-upgrade-info"] });
+      queryClient.invalidateQueries({ queryKey: ["helm-release-versions"] });
       queryClient.invalidateQueries({ queryKey: ["helm-batch-upgrade-info"] });
     },
   });
@@ -6254,10 +6255,12 @@ export function useAddHelmRepository() {
       return response.json();
     },
     meta: { errorMessage: "Failed to add Helm repository", successMessage: "Helm repository added" },
-    onSuccess: () => {
+    // Also on error: the repository can be saved before associating it fails.
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["helm-repositories"] });
       queryClient.invalidateQueries({ queryKey: ["helm-source-status"] });
       queryClient.invalidateQueries({ queryKey: ["helm-upgrade-info"] });
+      queryClient.invalidateQueries({ queryKey: ["helm-release-versions"] });
       queryClient.invalidateQueries({ queryKey: ["helm-batch-upgrade-info"] });
     },
   });
@@ -6288,6 +6291,7 @@ export function invalidateHelmAfterSourceChange(
     queryClient.invalidateQueries({ queryKey: ["helm-oci-sources"] }),
     queryClient.invalidateQueries({ queryKey: ["helm-source-status"] }),
     queryClient.invalidateQueries({ queryKey: ["helm-upgrade-info"] }),
+    queryClient.invalidateQueries({ queryKey: ["helm-release-versions"] }),
     queryClient.invalidateQueries({ queryKey: ["helm-batch-upgrade-info"] }),
   ])
 }

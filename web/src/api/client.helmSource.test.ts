@@ -18,13 +18,16 @@ describe('invalidateHelmAfterSourceChange', () => {
     })
     const unsubscribe = observer.subscribe(() => undefined)
 
+    const versionsKey = ['helm-release-versions', 'production', 'release']
     queryClient.setQueryData(inventoryKey, ['oci://registry.example.com/charts'])
+    queryClient.setQueryData(versionsKey, ['1.0.0'])
     await observer.refetch()
 
     sourceStatus = { configured: false, available: false, candidates: [] }
     await invalidateHelmAfterSourceChange(queryClient)
 
     expect(queryClient.getQueryState(inventoryKey)?.isInvalidated).toBe(true)
+    expect(queryClient.getQueryState(versionsKey)?.isInvalidated).toBe(true)
     expect(observer.getCurrentResult().data).toEqual({
       configured: false,
       available: false,

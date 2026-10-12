@@ -15,7 +15,9 @@ import (
 	"github.com/skyhook-io/radar/internal/k8s"
 	"helm.sh/helm/v3/pkg/storage/driver"
 	authv1 "k8s.io/api/authorization/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 )
@@ -87,6 +89,8 @@ func TestChartSourceErrorStatus(t *testing.T) {
 		{name: "invalid repository", err: fmt.Errorf("%w: bad URL", errInvalidRepositoryRequest), want: http.StatusBadRequest},
 		{name: "alias conflict", err: fmt.Errorf("%w: alias owned", errRepositoryConflict), want: http.StatusConflict},
 		{name: "missing release", err: fmt.Errorf("get release: %w", driver.ErrReleaseNotFound), want: http.StatusNotFound},
+		{name: "kubernetes denial", err: fmt.Errorf("update release: %w", apierrors.NewForbidden(schema.GroupResource{Resource: "secrets"}, "sh.helm.release.v1.example.v1", errors.New("denied"))), want: http.StatusForbidden},
+		{name: "repository 401", err: errors.New("failed to fetch https://charts.example.test/index.yaml : 401 Unauthorized"), want: http.StatusInternalServerError},
 		{name: "storage failure", err: errors.New("storage unavailable"), want: http.StatusInternalServerError},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

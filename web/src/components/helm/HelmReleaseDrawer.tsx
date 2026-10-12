@@ -111,6 +111,27 @@ export function isUpgradeSourceIssueActionable(issue: UpgradeInfo['sourceIssue']
   return Boolean(issue)
 }
 
+export interface UpgradePickerVersion {
+  version: string
+  // False for the installed version once the repository no longer publishes it:
+  // it is shown for orientation but can't be picked.
+  selectable: boolean
+}
+
+// Versions for the upgrade picker, newest first as the server returns them.
+// When the repository dropped the installed version, it is slotted in by
+// version order as a non-selectable entry so the user still sees where they are.
+// Returns null when there is nothing to choose between.
+export function upgradePickerVersions(available: string[] | undefined, current: string | undefined): UpgradePickerVersion[] | null {
+  if (!available) return null
+  const entries: UpgradePickerVersion[] = available.map(version => ({ version, selectable: true }))
+  if (current && !available.includes(current)) {
+    const olderIndex = available.findIndex(v => compareVersions(v, current) === -1)
+    entries.splice(olderIndex === -1 ? entries.length : olderIndex, 0, { version: current, selectable: false })
+  }
+  return entries.length > 1 ? entries : null
+}
+
 const MIN_WIDTH = 500
 const MAX_WIDTH_PERCENT = 0.8
 const DEFAULT_WIDTH = 1000
@@ -192,7 +213,7 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
     error: availableVersionsError,
   } = useHelmReleaseVersions(helmNamespace, release.name, showUpgradeConfirm)
   const targetVersion = selectedVersion ?? upgradeInfo?.latestVersion ?? ''
-  const selectableVersions = availableVersions && availableVersions.length > 1 ? availableVersions : null
+  const selectableVersions = upgradePickerVersions(availableVersions, upgradeInfo?.currentVersion)
   // Semver compare, not list-position: the installed version may be older than
   // the newest-N versions the picker shows, so it isn't always in the list.
   const isDowngrade = Boolean(
@@ -868,11 +889,11 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
                 disabled={isUpgrading || isPreviewingUpgrade}
                 className="w-full px-3 py-2 bg-theme-elevated border border-theme-border-light rounded-lg text-sm text-theme-text-primary focus:outline-none focus:ring-2 focus:ring-accent disabled:opacity-50"
               >
-                {selectableVersions.map((v) => (
-                  <option key={v} value={v}>
+                {selectableVersions.map(({ version: v, selectable }) => (
+                  <option key={v} value={v} disabled={!selectable}>
                     {v}
                     {v === upgradeInfo?.latestVersion ? ' (latest)' : ''}
-                    {v === upgradeInfo?.currentVersion ? ' (current)' : ''}
+                    {v === upgradeInfo?.currentVersion ? (selectable ? ' (current)' : ' (current, no longer in the repository)') : ''}
                   </option>
                 ))}
               </select>
