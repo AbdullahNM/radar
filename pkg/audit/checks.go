@@ -166,6 +166,7 @@ func RunChecks(input *CheckInput) *ScanResults {
 	// and on ScheduledBackup absence-authority — records nothing rather than
 	// reporting a missing input.
 	findings = append(findings, checkCNPGDeclarativeBackup(tr, input)...)
+	findings = append(findings, checkStorage(tr, input, time.Now())...)
 
 	return buildResults(findings, tr, missingInputs)
 }
@@ -206,6 +207,16 @@ func (t *evalTracker) record(checkID, namespace string) {
 func (t *evalTracker) recordAll(ids []string, namespace string) {
 	for _, id := range ids {
 		t.record(id, namespace)
+	}
+}
+
+// skip reports input as missing because its absence left a subject
+// unevaluated. An evidence gap that still lets the check emit its finding
+// belongs in that finding's message, not here: consumers read every missing
+// input as checks that could not run.
+func (t *evalTracker) skip(input string) {
+	if !slices.Contains(t.missingInputs, input) {
+		t.missingInputs = append(t.missingInputs, input)
 	}
 }
 
@@ -987,9 +998,7 @@ func checkPodHARisk(tr *evalTracker, pods []*corev1.Pod, deployments []*appsv1.D
 		}
 		if incomplete[d.Namespace] {
 			// An unresolved ReplicaSet may own another replica of this Deployment.
-			if !slices.Contains(tr.missingInputs, "replicaset-ownership") {
-				tr.missingInputs = append(tr.missingInputs, "replicaset-ownership")
-			}
+			tr.skip("replicaset-ownership")
 			continue
 		}
 		count := 0
@@ -1053,10 +1062,7 @@ func checkOrphanConfigMapsSecrets(tr *evalTracker, input *CheckInput) []Finding 
 			complete = evidence.ReflectionsComplete[kind]
 		}
 		if !complete {
-			missing := strings.ToLower(kind) + "-references"
-			if !slices.Contains(tr.missingInputs, missing) {
-				tr.missingInputs = append(tr.missingInputs, missing)
-			}
+			tr.skip(strings.ToLower(kind) + "-references")
 			return false
 		}
 		tr.record("orphanConfigMapSecret", ns)
@@ -1803,6 +1809,18 @@ func checkStuckTerminating(tr *evalTracker, input *CheckInput) []Finding {
 		if len(finalizers) > 0 {
 			note = " — finalizers: " + strings.Join(finalizers, ", ")
 		}
+		// The storage protection finalizers hold deletion while the object is
+		// in use; they don't point at a stalled controller. Deletion can't be
+		// cancelled, and letting it complete may delete the data, so the note
+		// says what releases the hold without telling anyone to release it.
+		for _, f := range finalizers {
+			switch f {
+			case "kubernetes.io/pvc-protection":
+				note += ". kubernetes.io/pvc-protection holds deletion while a Pod uses the claim; when no Pod does, the claim is deleted and its volume follows its reclaim policy. Back up the data before then if the deletion was unintended, and don't remove the finalizer by hand"
+			case "kubernetes.io/pv-protection":
+				note += ". kubernetes.io/pv-protection holds deletion while the volume is bound to a claim; Kubernetes removes it once the volume is no longer bound. Don't remove the finalizer by hand"
+			}
+		}
 		findings = append(findings, Finding{
 			Kind:      kind,
 			Namespace: obj.GetNamespace(),
@@ -1848,6 +1866,12 @@ func checkStuckTerminating(tr *evalTracker, input *CheckInput) []Finding {
 	}
 	for _, sa := range input.ServiceAccounts {
 		emit("ServiceAccount", sa)
+	}
+	for _, pvc := range input.PersistentVolumeClaims {
+		emit("PersistentVolumeClaim", pvc)
+	}
+	for _, pv := range input.PersistentVolumes {
+		emit("PersistentVolume", pv)
 	}
 	return findings
 }
