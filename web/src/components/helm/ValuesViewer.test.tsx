@@ -10,11 +10,17 @@ const mutations = vi.hoisted(() => ({
   preview: vi.fn(async () => undefined),
 }))
 
+const overridesQuery = vi.hoisted(() => ({
+  current: {} as { data?: { userSupplied: Record<string, unknown> | null }; error: unknown; isFetching: boolean; refetch?: () => void },
+  refetch: vi.fn(),
+}))
+
 vi.mock('@skyhook-io/k8s-ui', () => ({
   PaneLoader: ({ label }: { label: string }) => <div>{label}</div>,
 }))
 vi.mock('../../api/client', () => ({
   useCanHelmAct: () => ({ allowed: true }),
+  useHelmValues: () => ({ refetch: overridesQuery.refetch, ...overridesQuery.current }),
   useHelmApplyValues: () => ({
     mutateAsync: mutations.apply,
     isPending: false,
@@ -43,7 +49,6 @@ vi.mock('../ui/Tooltip', () => ({
 
 const values: HelmValues = {
   userSupplied: { image: { tag: 'pinned' } },
-  userSuppliedLoaded: true,
   computed: {
     image: { repository: 'example/app', tag: 'pinned' },
     replicaCount: 2,
@@ -55,6 +60,11 @@ Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true })
 let root: Root
 
 beforeEach(() => {
+  overridesQuery.current = {
+    data: { userSupplied: { image: { tag: 'pinned' } } },
+    error: null,
+    isFetching: false,
+  }
   mutations.apply.mockClear()
   mutations.preview.mockClear()
   const element = document.createElement('div')
@@ -69,27 +79,26 @@ afterEach(async () => {
 
 function Harness({
   helmValues = values,
-  simulateOverrideLoading = false,
+  error,
+  onRetry,
 }: {
-  helmValues?: HelmValues
-  simulateOverrideLoading?: boolean
+  helmValues?: HelmValues | null
+  error?: unknown
+  onRetry?: () => void
 }) {
   const [showEffectiveValues, setShowEffectiveValues] = useState(true)
-  const [isLoading, setIsLoading] = useState(false)
-  const handleToggle = (showEffective: boolean) => {
-    setShowEffectiveValues(showEffective)
-    if (!showEffective && simulateOverrideLoading) setIsLoading(true)
-  }
   return (
     <ValuesViewer
-      values={helmValues}
-      isLoading={isLoading}
+      values={helmValues ?? undefined}
+      isLoading={false}
+      error={error}
       showEffectiveValues={showEffectiveValues}
-      onToggleEffectiveValues={handleToggle}
+      onToggleEffectiveValues={setShowEffectiveValues}
       onCopy={() => undefined}
       copied={false}
       namespace="demo"
       name="example"
+      onRetry={onRetry}
     />
   )
 }
@@ -147,27 +156,113 @@ describe('ValuesViewer', () => {
     })
   })
 
-  it('blocks editing and apply when user overrides were not loaded', async () => {
-    await renderViewer(
-      <Harness helmValues={{ ...values, userSupplied: {}, userSuppliedLoaded: false }} />,
-    )
+  it('keeps user overrides and editing usable when only effective values fail to load', async () => {
+    const onRetry = vi.fn()
+    await renderViewer(<Harness helmValues={null} error={new Error('forbidden')} onRetry={onRetry} />)
 
-    const editButton = button('Edit Overrides') as HTMLButtonElement
-    expect(editButton.disabled).toBe(true)
-    expect(document.body.textContent).toContain(
-      'User overrides could not be loaded',
-    )
+    expect(document.body.textContent).toContain("Couldn't load effective values.")
+    expect(document.querySelector('[data-testid="values-code"]')).toBeNull()
+    await act(async () => button('Try again')!.click())
+    expect(onRetry).toHaveBeenCalledTimes(1)
 
-    await act(async () => editButton.click())
+    await act(async () => button('User Overrides')!.click())
+    expect(document.body.textContent).not.toContain("Couldn't load effective values")
+    expect(document.querySelector('[data-testid="values-code"]')?.textContent).toContain('tag: pinned')
 
+    await act(async () => button('Edit Overrides')!.click())
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toContain('tag: pinned')
+    await act(async () => button('Apply')!.click())
+    expect(mutations.apply).toHaveBeenCalledWith({ namespace: 'demo', name: 'example', values: { image: { tag: 'pinned' } } })
+  })
+
+  it('blocks editing when both reads fail, and says so in each view', async () => {
+    overridesQuery.current = { data: undefined, error: new Error('forbidden'), isFetching: false }
+    await renderViewer(<Harness helmValues={null} error={new Error('forbidden')} />)
+
+    expect(document.body.textContent).toContain("Couldn't load effective values.")
+    expect(document.body.textContent).toContain("Couldn't load your overrides, so editing is off.")
+    expect((button('Edit Overrides') as HTMLButtonElement).disabled).toBe(true)
+
+    await act(async () => button('User Overrides')!.click())
+    expect(document.body.textContent).toContain("Couldn't load your overrides. Editing is off until they load.")
+    expect(document.body.textContent).not.toContain('Showing the last ones that loaded')
+    expect((button('Edit Overrides') as HTMLButtonElement).disabled).toBe(true)
     expect(document.querySelector('textarea')).toBeNull()
-    expect(button('Apply')).toBeUndefined()
     expect(mutations.apply).not.toHaveBeenCalled()
   })
 
+  it('keeps showing loaded values when a later refetch fails, but blocks editing', async () => {
+    overridesQuery.current = { ...overridesQuery.current, error: new Error('refetch failed') }
+    await renderViewer(<Harness error={new Error('refetch failed')} />)
+
+    expect(document.body.textContent).toContain("Couldn't refresh effective values. Showing the last ones that loaded.")
+    expect(document.body.textContent).toContain("Couldn't refresh your overrides, so editing is off.")
+    expect(
+      document.querySelector('[data-testid="values-code"]')?.textContent,
+    ).toContain('replicaCount: 2')
+    expect((button('Edit Overrides') as HTMLButtonElement).disabled).toBe(true)
+
+    await act(async () => button('User Overrides')!.click())
+    expect(document.body.textContent).toContain("Couldn't refresh your overrides. Showing the last ones that loaded. Editing is off until they load again.")
+    expect(document.querySelector('[data-testid="values-code"]')?.textContent).toContain('tag: pinned')
+  })
+
+  it('seeds the editor from the overrides-only read, not the all-values response', async () => {
+    // An older Radar can answer all=true with empty overrides when its second read fails.
+    await renderViewer(<Harness helmValues={{ ...values, userSupplied: {} }} />)
+
+    await act(async () => button('Edit Overrides')!.click())
+
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toContain('tag: pinned')
+  })
+
+  it('shows overrides from the overrides-only read', async () => {
+    await renderViewer(<Harness helmValues={{ ...values, userSupplied: {} }} />)
+
+    await act(async () => button('User Overrides')!.click())
+
+    expect(document.querySelector('[data-testid="values-code"]')?.textContent).toContain('tag: pinned')
+  })
+
+  it('lets an older Radar edit a release with no overrides (null userSupplied)', async () => {
+    overridesQuery.current = { ...overridesQuery.current, data: { userSupplied: null } }
+    await renderViewer()
+
+    await act(async () => button('Edit Overrides')!.click())
+
+    expect((document.querySelector('textarea') as HTMLTextAreaElement).value).toBe('')
+  })
+
+  it('explains a failed refresh in the empty state', async () => {
+    overridesQuery.current = { ...overridesQuery.current, data: { userSupplied: {} }, error: new Error('refetch failed') }
+    await renderViewer(<Harness helmValues={{ ...values, userSupplied: {} }} />)
+
+    await act(async () => button('User Overrides')!.click())
+
+    expect(document.body.textContent).toContain('No user overrides')
+    expect(document.body.textContent).toContain("Couldn't refresh your overrides. Showing the last ones that loaded.")
+  })
+
+  it('never shows the all-values copy of overrides when the overrides-only read failed', async () => {
+    overridesQuery.current = { data: undefined, error: new Error('forbidden'), isFetching: false }
+    await renderViewer(<Harness helmValues={{ ...values, userSupplied: {} }} />)
+
+    await act(async () => button('User Overrides')!.click())
+
+    expect(document.body.textContent).toContain("Couldn't load your overrides. Editing is off until they load.")
+    expect(document.body.textContent).not.toContain('No user overrides')
+    expect(document.body.textContent).not.toContain('Showing the last ones that loaded')
+    expect((button('Edit Overrides') as HTMLButtonElement).disabled).toBe(true)
+
+    overridesQuery.refetch.mockClear()
+    await act(async () => button('Try again')!.click())
+    expect(overridesQuery.refetch).toHaveBeenCalledTimes(1)
+  })
+
   it('keeps successfully loaded empty overrides editable', async () => {
+    overridesQuery.current = { ...overridesQuery.current, data: { userSupplied: {} } }
     await renderViewer(
-      <Harness helmValues={{ ...values, userSupplied: {}, userSuppliedLoaded: true }} />,
+      <Harness helmValues={{ ...values, userSupplied: {} }} />,
     )
 
     await act(async () => button('Edit Overrides')!.click())
@@ -181,16 +276,26 @@ describe('ValuesViewer', () => {
     })
   })
 
-  it('preserves the edit session while an override view load is pending', async () => {
-    await renderViewer(<Harness simulateOverrideLoading />)
-
+  it('keeps the edit and blocks apply while overrides reload or fail to reload', async () => {
+    await renderViewer()
     await act(async () => button('Edit Overrides')!.click())
 
+    overridesQuery.current = { ...overridesQuery.current, isFetching: true }
+    await renderViewer()
     expect(document.body.textContent).toContain('Editing User Overrides')
-    expect(document.body.textContent).toContain(
-      'Your override edit session is preserved',
-    )
+    expect(document.body.textContent).toContain('Reloading user overrides. Your edits are kept.')
     expect(document.querySelector('textarea')).not.toBeNull()
     expect((button('Apply') as HTMLButtonElement).disabled).toBe(true)
+
+    overridesQuery.current = { ...overridesQuery.current, isFetching: false, error: new Error('refetch failed') }
+    await renderViewer()
+    expect(document.body.textContent).toContain("Couldn't reload user overrides, so Apply is off.")
+    expect(document.querySelector('textarea')).not.toBeNull()
+    expect((button('Apply') as HTMLButtonElement).disabled).toBe(true)
+
+    overridesQuery.refetch.mockClear()
+    await act(async () => button('Try again')!.click())
+    expect(overridesQuery.refetch).toHaveBeenCalledTimes(1)
+    expect(document.querySelector('textarea')).not.toBeNull()
   })
 })

@@ -102,7 +102,7 @@ export function isUpgradeSourceIssueActionable(issue: UpgradeInfo['sourceIssue']
 const MIN_WIDTH = 500
 const MAX_WIDTH_PERCENT = 0.8
 const DEFAULT_WIDTH = 1000
-export const DEFAULT_SHOW_EFFECTIVE_VALUES = true
+export const DEFAULT_SHOW_EFFECTIVE_VALUES = false
 
 export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOpen = true, rightInset = 0 }: HelmReleaseDrawerProps) {
   const navigate = useNavigate()
@@ -146,7 +146,7 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
   )
 
   // Fetch values
-  const { data: values, isLoading: valuesLoading, error: valuesError } = useHelmValues(
+  const { data: values, isLoading: valuesLoading, error: valuesError, refetch: refetchValues } = useHelmValues(
     helmNamespace,
     release.name,
     true,
@@ -746,6 +746,7 @@ export function HelmReleaseDrawer({ release, onClose, onNavigateToResource, isOp
                 revision={selectedRevision}
                 currentRevision={releaseDetail.revision}
                 onApplySuccess={() => refetch()}
+                onRetry={() => void refetchValues()}
               />
             )}
             {activeTab === 'resources' && (

@@ -2,8 +2,8 @@ import { describe, expect, it } from 'vitest'
 import { DEFAULT_SHOW_EFFECTIVE_VALUES, isUpgradeSourceIssueActionable } from './HelmReleaseDrawer'
 
 describe('Helm values view', () => {
-  it('shows effective values by default', () => {
-    expect(DEFAULT_SHOW_EFFECTIVE_VALUES).toBe(true)
+  it('opens on user overrides', () => {
+    expect(DEFAULT_SHOW_EFFECTIVE_VALUES).toBe(false)
   })
 })
 

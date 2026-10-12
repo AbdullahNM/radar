@@ -749,7 +749,7 @@ func getValuesWith(actionConfig *action.Configuration, name string, allValues bo
 	if userSupplied == nil {
 		userSupplied = map[string]any{}
 	}
-	result := &HelmValues{UserSupplied: userSupplied, UserSuppliedLoaded: true}
+	result := &HelmValues{UserSupplied: userSupplied}
 
 	if allValues {
 		computed, err := chartutil.CoalesceValues(rel.Chart, rel.Config)
@@ -797,49 +797,6 @@ func (c *Client) getValuesDiff(namespace, name string, revision1, revision2 int,
 		return nil, err
 	}
 	return &ValuesDiff{Revision1: revision1, Revision2: revision2, AllValues: allValues, Diff: diff}, nil
-}
-
-// GetValuesDiffsAsUser returns both user-supplied and effective values diffs
-// while loading each release revision once.
-func (c *Client) GetValuesDiffsAsUser(namespace, name string, revision1, revision2 int, username string, groups []string) (*ValuesDiffs, error) {
-	var (
-		actionConfig *action.Configuration
-		err          error
-	)
-	if username == "" {
-		actionConfig, err = c.getActionConfig(namespace)
-	} else {
-		actionConfig, err = c.getActionConfigForUser(namespace, username, groups)
-	}
-	if err != nil {
-		return nil, err
-	}
-	return getValuesDiffsWith(actionConfig, name, revision1, revision2)
-}
-
-func getValuesDiffsWith(actionConfig *action.Configuration, name string, revision1, revision2 int) (*ValuesDiffs, error) {
-	values1, err := getValuesWith(actionConfig, name, true, revision1)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get values for revision %d: %w", revision1, err)
-	}
-	values2, err := getValuesWith(actionConfig, name, true, revision2)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get values for revision %d: %w", revision2, err)
-	}
-	userSuppliedDiff, err := computeValuesDiff(values1, values2, revision1, revision2, false)
-	if err != nil {
-		return nil, err
-	}
-	effectiveValuesDiff, err := computeValuesDiff(values1, values2, revision1, revision2, true)
-	if err != nil {
-		return nil, err
-	}
-	return &ValuesDiffs{
-		Revision1:           revision1,
-		Revision2:           revision2,
-		UserSuppliedDiff:    userSuppliedDiff,
-		EffectiveValuesDiff: effectiveValuesDiff,
-	}, nil
 }
 
 // GetManifestDiff returns the diff between two revisions

@@ -748,9 +748,6 @@ func TestGetValuesWithAllValuesLoadsOverridesAndComputedFromOneRead(t *testing.T
 	if got := image["tag"]; got != "2.0.0" {
 		t.Fatalf("Computed[image][tag] = %#v, want user override", got)
 	}
-	if !values.UserSuppliedLoaded {
-		t.Fatal("UserSuppliedLoaded = false, want true")
-	}
 	userImage, ok := values.UserSupplied["image"].(map[string]any)
 	if !ok || userImage["tag"] != "2.0.0" {
 		t.Fatalf("UserSupplied[image] = %#v, want preserved override", values.UserSupplied["image"])
@@ -760,7 +757,7 @@ func TestGetValuesWithAllValuesLoadsOverridesAndComputedFromOneRead(t *testing.T
 	}
 }
 
-func TestGetValuesWithDistinguishesEmptyOverridesFromLoadFailure(t *testing.T) {
+func TestGetValuesWithReturnsEmptyOverridesAsEmptyMap(t *testing.T) {
 	rel := helmTestRelease("empty-values", "demo", 1, release.StatusDeployed, "deployed")
 	rel.Config = nil
 	actionConfig := &action.Configuration{
@@ -775,44 +772,8 @@ func TestGetValuesWithDistinguishesEmptyOverridesFromLoadFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !values.UserSuppliedLoaded {
-		t.Fatal("UserSuppliedLoaded = false, want true for successfully loaded empty overrides")
-	}
 	if values.UserSupplied == nil || len(values.UserSupplied) != 0 {
 		t.Fatalf("UserSupplied = %#v, want a non-nil empty map", values.UserSupplied)
-	}
-}
-
-func TestGetValuesDiffsWithLoadsEachRevisionOnce(t *testing.T) {
-	driver := &countingReadDriver{inner: storagedriver.NewMemory(), failAfter: 2}
-	actionConfig := &action.Configuration{
-		KubeClient: &kubefake.PrintingKubeClient{Out: io.Discard},
-		Releases:   helmstorage.Init(driver),
-	}
-	for revision, tag := range []string{"1.0.0", "2.0.0"} {
-		rel := helmTestRelease("values-demo", "demo", revision+1, release.StatusDeployed, "deployed")
-		rel.Chart = &chart.Chart{
-			Metadata: &chart.Metadata{Name: "values-demo"},
-			Values:   map[string]any{"image": map[string]any{"tag": tag}},
-		}
-		rel.Config = map[string]any{"replicaCount": 2}
-		if err := actionConfig.Releases.Create(rel); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	diffs, err := getValuesDiffsWith(actionConfig, "values-demo", 1, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if driver.reads != 2 {
-		t.Fatalf("release reads = %d, want one per revision", driver.reads)
-	}
-	if diffHasBodyChange(diffs.UserSuppliedDiff) {
-		t.Fatalf("user-supplied diff changed for identical overrides:\n%s", diffs.UserSuppliedDiff)
-	}
-	if !diffHasBodyChange(diffs.EffectiveValuesDiff) {
-		t.Fatalf("effective values diff missed revision chart defaults:\n%s", diffs.EffectiveValuesDiff)
 	}
 }
 

@@ -40,14 +40,14 @@ describe('CompareSummary value signals', () => {
     renderSummary(sameDiff, changedDiff)
 
     expect(signalText('overrides')).toBe('Overridessame')
-    expect(signalText('effective-values')).toBe('Effective valueschanged')
+    expect(signalText('effective-values')).toBe('Effective values1 add / 1 remove')
   })
 
   it('shows both signals changed when an override changes effective values', () => {
     renderSummary(changedDiff, changedDiff)
 
-    expect(signalText('overrides')).toBe('Overrideschanged')
-    expect(signalText('effective-values')).toBe('Effective valueschanged')
+    expect(signalText('overrides')).toBe('Overrides1 add / 1 remove')
+    expect(signalText('effective-values')).toBe('Effective values1 add / 1 remove')
   })
 
   it('shows both signals unchanged when both value sets are identical', () => {

@@ -24,7 +24,7 @@ import {
   useHelmNotesDiff,
   useHelmRelease,
   useHelmResourceDiff,
-  useHelmValuesDiffs,
+  useHelmValuesDiff,
 } from '../../api/client'
 import type { HelmHook, HelmRevision, HooksDiff, ResourceDiff } from '../../types'
 import { getHelmStatusColor, getKindBadgeColor, SEVERITY_BADGE } from '../../utils/badge-colors'
@@ -75,7 +75,8 @@ export function HelmCompareRoute() {
   const right = revisions.find((r) => r.revision === revision2)
 
   const manifestDiff = useHelmManifestDiff(helmNamespace, releaseName, revision1, revision2, pairReady)
-  const valuesDiffs = useHelmValuesDiffs(helmNamespace, releaseName, revision1, revision2, pairReady)
+  const overridesDiff = useHelmValuesDiff(helmNamespace, releaseName, revision1, revision2, false, pairReady)
+  const effectiveValuesDiff = useHelmValuesDiff(helmNamespace, releaseName, revision1, revision2, true, pairReady)
   const notesDiff = useHelmNotesDiff(helmNamespace, releaseName, revision1, revision2, pairReady)
   const hooksDiff = useHelmHooksDiff(helmNamespace, releaseName, revision1, revision2, pairReady)
   const resourceDiff = useHelmResourceDiff(helmNamespace, releaseName, revision1, revision2, pairReady)
@@ -257,12 +258,12 @@ export function HelmCompareRoute() {
                     manifestDiff={manifestDiff.data?.diff}
                     manifestLoading={manifestDiff.isLoading}
                     manifestError={manifestDiff.error}
-                    overridesDiff={valuesDiffs.data?.userSuppliedDiff}
-                    overridesLoading={valuesDiffs.isLoading}
-                    overridesError={valuesDiffs.error}
-                    effectiveValuesDiff={valuesDiffs.data?.effectiveValuesDiff}
-                    effectiveValuesLoading={valuesDiffs.isLoading}
-                    effectiveValuesError={valuesDiffs.error}
+                    overridesDiff={overridesDiff.data?.diff}
+                    overridesLoading={overridesDiff.isLoading}
+                    overridesError={overridesDiff.error}
+                    effectiveValuesDiff={effectiveValuesDiff.data?.diff}
+                    effectiveValuesLoading={effectiveValuesDiff.isLoading}
+                    effectiveValuesError={effectiveValuesDiff.error}
                     notesDiff={notesDiff.data?.diff}
                     notesLoading={notesDiff.isLoading}
                     notesError={notesDiff.error}
@@ -301,9 +302,9 @@ export function HelmCompareRoute() {
                   icon={Settings}
                   title="Effective values diff"
                   description="Computed values for each revision are compared here, including that revision's chart defaults and user overrides."
-                  diff={valuesDiffs.data?.effectiveValuesDiff || ''}
-                  isLoading={valuesDiffs.isLoading}
-                  error={valuesDiffs.error}
+                  diff={effectiveValuesDiff.data?.diff || ''}
+                  isLoading={effectiveValuesDiff.isLoading}
+                  error={effectiveValuesDiff.error}
                   emptyLabel="No effective value changes found."
                 />
 
@@ -312,9 +313,9 @@ export function HelmCompareRoute() {
                   icon={Settings}
                   title="User overrides diff"
                   description="Only values explicitly supplied to each release revision are compared here."
-                  diff={valuesDiffs.data?.userSuppliedDiff || ''}
-                  isLoading={valuesDiffs.isLoading}
-                  error={valuesDiffs.error}
+                  diff={overridesDiff.data?.diff || ''}
+                  isLoading={overridesDiff.isLoading}
+                  error={overridesDiff.error}
                   emptyLabel="No user override changes found."
                 />
 
@@ -588,20 +589,20 @@ export function CompareSummary({
           sectionId="resources"
         />
         <SignalPill
-          label="Overrides"
-          loading={overridesLoading}
-          error={overridesError}
-          tone={overridesStats.changed ? 'info' : 'neutral'}
-          value={overridesStats.changed ? 'changed' : 'same'}
-          sectionId="overrides"
-        />
-        <SignalPill
           label="Effective values"
           loading={effectiveValuesLoading}
           error={effectiveValuesError}
           tone={effectiveValuesStats.changed ? 'info' : 'neutral'}
-          value={effectiveValuesStats.changed ? 'changed' : 'same'}
+          value={effectiveValuesStats.changed ? `${effectiveValuesStats.additions} add / ${effectiveValuesStats.removals} remove` : 'same'}
           sectionId="effective-values"
+        />
+        <SignalPill
+          label="Overrides"
+          loading={overridesLoading}
+          error={overridesError}
+          tone={overridesStats.changed ? 'info' : 'neutral'}
+          value={overridesStats.changed ? `${overridesStats.additions} add / ${overridesStats.removals} remove` : 'same'}
+          sectionId="overrides"
         />
         <SignalPill
           label="Hooks"
