@@ -407,20 +407,44 @@ type OnsetCoverage struct {
 	Unknown int `json:"unknown"`
 }
 
+type EvidenceRead struct {
+	Group     string
+	Resource  string
+	Namespace string
+	Verb      string
+}
+
+// DegradedFinding is a finding as told to a caller who can't make its
+// RequiredReads: what is wrong and what to do, without the facts only those
+// reads reveal.
+type DegradedFinding struct {
+	Message string
+	Cause   string
+	Action  string
+}
+
 type Issue struct {
-	Severity      Severity      `json:"severity"`
-	Source        Source        `json:"source"`
-	Category      Category      `json:"category"`
-	CategoryGroup CategoryGroup `json:"category_group"`
-	ID            string        `json:"id"`
-	GroupingScope Scope         `json:"grouping_scope"`
-	Kind          string        `json:"kind"`
-	Group         string        `json:"group,omitempty"`
-	Namespace     string        `json:"namespace,omitempty"`
-	Name          string        `json:"name"`
-	Reason        string        `json:"reason"`
-	Message       string        `json:"message,omitempty"`
-	RawMessage    string        `json:"raw_message,omitempty"`
+	// Degraded replaces the message, cause and action for a caller who can't
+	// make RequiredReads, and the onset is withheld with it. Without it such a
+	// caller doesn't get the finding.
+	Degraded *DegradedFinding `json:"-"`
+
+	// RequiredReads describe the inventories behind a cross-resource finding.
+	// They are retained internally so cached and grouped projections can authorize it.
+	RequiredReads []EvidenceRead `json:"-"`
+	Severity      Severity       `json:"severity"`
+	Source        Source         `json:"source"`
+	Category      Category       `json:"category"`
+	CategoryGroup CategoryGroup  `json:"category_group"`
+	ID            string         `json:"id"`
+	GroupingScope Scope          `json:"grouping_scope"`
+	Kind          string         `json:"kind"`
+	Group         string         `json:"group,omitempty"`
+	Namespace     string         `json:"namespace,omitempty"`
+	Name          string         `json:"name"`
+	Reason        string         `json:"reason"`
+	Message       string         `json:"message,omitempty"`
+	RawMessage    string         `json:"raw_message,omitempty"`
 	// Cause / Action / Remediation* carry parsed domain diagnosis. They give the
 	// Issues page + MCP a plain-English cause + next step when a detector has
 	// enough evidence. All optional — empty for issues without a parser.

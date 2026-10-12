@@ -965,7 +965,7 @@ func handleListResources(ctx context.Context, req *mcp.CallToolRequest, input li
 		if clusterScoped {
 			idxNamespaces = nil
 		}
-		if builder := newResourceSummaryContextBuilder(idxNamespaces); builder != nil {
+		if builder := newResourceSummaryContextBuilder(ctx, idxNamespaces); builder != nil {
 			summarycontext.AttachToTypedList(results, objs, builder)
 		}
 	}
@@ -1005,7 +1005,7 @@ func listDynamicResources(ctx context.Context, cache *k8s.ResourceCache, kind, g
 		if clusterScoped {
 			idxNamespaces = nil
 		}
-		if builder := newResourceSummaryContextBuilder(idxNamespaces); builder != nil {
+		if builder := newResourceSummaryContextBuilder(ctx, idxNamespaces); builder != nil {
 			summarycontext.AttachToUnstructuredList(allItems, rawItems, builder)
 		}
 	}
@@ -2345,6 +2345,10 @@ type mcpProblem struct {
 	// ageSeconds is for sort tiebreak; not serialized so it doesn't widen
 	// the wire shape callers depend on.
 	ageSeconds int64 `json:"-"`
+	// requiredReads are the detection's evidence, checked like an issue's;
+	// degraded is what a caller who can't make them sees instead.
+	requiredReads []issues.EvidenceRead
+	degraded      *issues.DegradedFinding
 }
 
 // problemSeverityRank maps the Problem.Severity vocabulary onto sort order.
@@ -2567,6 +2571,8 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 			RestartCount:         p.RestartCount,
 			LastTerminatedReason: p.LastTerminatedReason,
 			ageSeconds:           p.AgeSeconds,
+			requiredReads:        p.RequiredReads,
+			degraded:             p.Degraded,
 		})
 	}
 
@@ -2616,15 +2622,17 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 			continue
 		}
 		allProblems = append(allProblems, mcpProblem{
-			Kind:       p.Kind,
-			Namespace:  p.Namespace,
-			Name:       p.Name,
-			Group:      p.Group,
-			Severity:   p.Severity,
-			Reason:     p.Reason,
-			Message:    p.Message,
-			Age:        p.Age,
-			ageSeconds: p.AgeSeconds,
+			Kind:          p.Kind,
+			Namespace:     p.Namespace,
+			Name:          p.Name,
+			Group:         p.Group,
+			Severity:      p.Severity,
+			Reason:        p.Reason,
+			Message:       p.Message,
+			Age:           p.Age,
+			ageSeconds:    p.AgeSeconds,
+			requiredReads: p.RequiredReads,
+			degraded:      p.Degraded,
 		})
 	}
 
@@ -2647,6 +2655,28 @@ func buildDashboard(ctx context.Context, cache *k8s.ResourceCache, namespace str
 	// Without this, the cap drops critical missing-refs in favour of
 	// medium-severity workload problems that happened to be appended
 	// earlier — the agent gets a non-representative subset.
+	// Problems follow the issues' read rules: a cluster-scoped problem needs
+	// list on its kind, and a Secret's own problem and one drawn from Secrets
+	// need Secret access.
+	canReadClusterScoped := issueClusterScopedAccess(ctx)
+	canReadSubject, canReadEvidence := issueSubjectAccess(ctx), issueEvidenceAccess(ctx)
+	readable := allProblems[:0]
+	for _, p := range allProblems {
+		if p.Namespace == "" && !canReadClusterScoped(p.Kind, p.Group) {
+			continue
+		}
+		if p.Namespace != "" && !canReadSubject(issues.Ref{Group: p.Group, Kind: p.Kind, Namespace: p.Namespace, Name: p.Name}) {
+			continue
+		}
+		switch issues.ViewEvidence(p.requiredReads, p.degraded, canReadEvidence, false) {
+		case issues.EvidenceWithheld:
+			continue
+		case issues.EvidenceDegraded:
+			p.Message = p.degraded.Message
+		}
+		readable = append(readable, p)
+	}
+	allProblems = readable
 	sortMCPDashboardProblems(allProblems)
 	d.TotalProblems = len(allProblems)
 	d.ProblemsBySeverity = countBySeverity(allProblems)
@@ -3030,7 +3060,9 @@ func handleIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, input issuesI
 		CanReadClusterScoped: func(kind, group string) bool {
 			return canReadClusterScopedKind(ctx, kind, group, "list")
 		},
-		CanReadRelated: issueRelatedResourceAccess(ctx),
+		CanReadRelated:  issueRelatedResourceAccess(ctx),
+		CanReadSubject:  issueSubjectAccess(ctx),
+		CanReadEvidence: issueEvidenceAccess(ctx),
 	}
 	if input.Filter != "" {
 		f, err := filter.CachedIssueFilter(input.Filter)
@@ -3345,7 +3377,7 @@ func handleSearch(ctx context.Context, req *mcp.CallToolRequest, input searchInp
 	// builder routes per-hit by scope; CanReadClusterScoped above
 	// already gates which cluster-scoped kinds are reachable.
 	if input.Context != "none" {
-		if builder := newSearchSummaryContextBuilder(scanNamespaces); builder != nil {
+		if builder := newSearchSummaryContextBuilder(ctx, scanNamespaces); builder != nil {
 			opts.SummaryBuilder = search.SummaryBuilderFunc(builder)
 		}
 	}
