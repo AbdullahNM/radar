@@ -40,3 +40,11 @@ while a replacement is shown. Sidebar kind navigation remains available.
 `CertaintyGlyph` displays `=`, `≥`, `≤` or `?` for an exact, lower-bound,
 upper-bound or unknown value, with an accessible label and optional evidence
 tooltip. `certaintyGlyph` and `certaintyValueLabel` expose the same vocabulary.
+
+## Optional flow controls
+
+`CreateResourceDialog` defaults to Apply. Guided flows can set `initialMode="create"` and `lockMode` to require creation, and use `onBack(draftYaml)` to retain edits when returning to setup. Cancel closes the dialog. After a successful write, `onCreated(result, submittedYaml)` receives the first result and the exact submitted manifest; dry runs do not invoke it. `result.uid`, when supplied by Radar, identifies the persisted object. Partial creates name the objects already created. Unlocked flows switch to Apply for review when preview is available; direct creation keeps Create selected so a retry cannot silently update existing objects.
+
+`useOpenTerminal` accepts `shell` (one executable name, without arguments), `title`, and `sessionNote`. Dock hosts must forward these fields to their terminal renderer; Radar does so. The shared `TerminalTab` accepts `command` to describe that executable, pin the container, and suppress shell debug advice, plus `note` for session context. `createSession` remains responsible for launching the command. Omitted options retain the normal shell session.
+
+`AreaChart` supports optional `shadedRanges`, controlled `selection`, and `onSelectRange`. Range timestamps use Unix seconds. Dragging selects a range; with positive `stepSeconds`, clicking selects a step-wide window centered on the pointer, clipped at the chart edges. Arrow keys plus Enter select a window from the keyboard. Shaded range labels appear on hover. `AlertBanner.action` places a host-supplied control alongside the title. Omitting these props preserves existing charts and banners.
