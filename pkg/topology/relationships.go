@@ -1,6 +1,7 @@
 package topology
 
 import (
+	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -8,6 +9,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/skyhook-io/radar/pkg/configrefs"
 	"github.com/skyhook-io/radar/pkg/resourceid"
 )
 
@@ -22,6 +24,8 @@ type RelationshipsIndex struct {
 	byNodeID           map[string]*nodeEdgeSlots
 	nodesByID          map[string]*Node
 	nodesByResourceKey map[string]*Node
+	podConsumers       map[string][]ResourceRef
+	visiblePods        map[string]bool
 }
 
 type nodeEdgeSlots struct {
@@ -43,12 +47,30 @@ func IndexByResource(topo *Topology) *RelationshipsIndex {
 		byNodeID:           make(map[string]*nodeEdgeSlots, len(topo.Nodes)),
 		nodesByID:          make(map[string]*Node, len(topo.Nodes)),
 		nodesByResourceKey: make(map[string]*Node, len(topo.Nodes)),
+		podConsumers:       topo.podConsumers,
+		visiblePods:        make(map[string]bool),
 	}
 	for i := range topo.Nodes {
 		node := &topo.Nodes[i]
 		idx.nodesByID[node.ID] = node
 		for _, key := range nodeResourceKeys(node) {
 			idx.nodesByResourceKey[key] = node
+		}
+	}
+	// A shared snapshot may have been stripped for this user before indexing.
+	visiblePods := idx.visiblePods
+	for _, node := range topo.Nodes {
+		if node.Kind == KindPod {
+			visiblePods[resourceid.ResourceKey("", "Pod", nodeNamespaceFromData(&node), node.Name)] = true
+		}
+		if node.Kind == KindPodGroup {
+			if pods, ok := node.Data["pods"].([]map[string]any); ok {
+				for _, pod := range pods {
+					name, _ := pod["name"].(string)
+					ns, _ := pod["namespace"].(string)
+					visiblePods[resourceid.ResourceKey("", "Pod", ns, name)] = true
+				}
+			}
 		}
 	}
 	for _, e := range topo.Edges {
@@ -70,6 +92,27 @@ func IndexByResource(topo *Topology) *RelationshipsIndex {
 		}
 	}
 	return idx
+}
+
+func (r *RelationshipsIndex) podConsumersFor(key string) []ResourceRef {
+	if r == nil || r.nodesByResourceKey[key] == nil {
+		return nil
+	}
+	var visible []ResourceRef
+	for _, ref := range r.podConsumers[key] {
+		if r.visiblePods[resourceid.ResourceKey("", "Pod", ref.Namespace, ref.Name)] {
+			visible = append(visible, ref)
+		}
+	}
+	visible = uniqueResourceRefs(visible)
+	sort.Slice(visible, func(i, j int) bool {
+		a, b := visible[i], visible[j]
+		if a.Namespace != b.Namespace {
+			return a.Namespace < b.Namespace
+		}
+		return a.Name < b.Name
+	})
+	return visible
 }
 
 // EdgesFor returns the incoming and outgoing edges touching nodeID. Both
@@ -627,6 +670,22 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 		queriedObj = lookupObjectMetadata(kindLower, namespace, name, provider, dp)
 	}
 	if pod, ok := queriedObj.(*corev1.Pod); ok {
+
+		for _, declaration := range configrefs.PodSpecReferences(pod.Namespace, pod.Spec) {
+			if declaration.Kind == "ServiceAccount" {
+				continue
+			}
+			target := lookupIndex.nodesByResourceKey[resourceid.ResourceKey("", declaration.Kind, declaration.Namespace, declaration.Name)]
+			if target == nil {
+				continue
+			}
+			ref := ResourceRef{Kind: declaration.Kind, Namespace: declaration.Namespace, Name: declaration.Name}
+			if declaration.Kind == "PersistentVolumeClaim" {
+				rel.StorageRefs = append(rel.StorageRefs, ref)
+			} else {
+				rel.ConfigRefs = append(rel.ConfigRefs, ref)
+			}
+		}
 		if sa := pod.Spec.ServiceAccountName; sa != "" {
 			saRef := ResourceRef{Kind: "ServiceAccount", Namespace: namespace, Name: sa}
 			enrichRef(&saRef, dp)
@@ -656,6 +715,10 @@ func GetRelationshipsWithObject(kind, namespace, name string, obj any, topo *Top
 				})
 			}
 		}
+	}
+
+	if resourceGroup == "" && (resourceKind == "ConfigMap" || resourceKind == "Secret" || resourceKind == "PersistentVolumeClaim" || resourceKind == "ServiceAccount") {
+		rel.Consumers = append(rel.Consumers, lookupIndex.podConsumersFor(resourceid.ResourceKey("", resourceKind, namespace, name))...)
 	}
 	if endpoint, ok := queriedObj.(*unstructured.Unstructured); ok &&
 		(kindLower == "hostendpoint" || kindLower == "hostendpoints") &&

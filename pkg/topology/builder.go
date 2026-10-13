@@ -3,6 +3,7 @@ package topology
 import (
 	"fmt"
 	"log"
+	"maps"
 	"net/url"
 	"slices"
 	"sort"
@@ -443,7 +444,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		})
 
 		// Track ConfigMap/Secret/PVC references
-		refs := extractWorkloadReferences(deploy.Spec.Template.Spec)
+		refs := extractWorkloadReferences(deploy.Spec.Template.Spec, opts.ForRelationshipCache)
 		trackWorkloadRefs(deployID, deploy.Namespace, refs)
 	}
 
@@ -619,7 +620,10 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			// Extract pod template spec for config references
 			template, _, _ := unstructured.NestedMap(spec, "template", "spec")
 			if template != nil {
-				refs := extractWorkloadReferencesFromMap(template)
+				refs, err := extractWorkloadReferencesFromMap(template, opts.ForRelationshipCache)
+				if err != nil {
+					warnings = append(warnings, fmt.Sprintf("Rollout %s/%s PodSpec could not be fully decoded; readable configuration references retained", ns, name))
+				}
 				trackWorkloadRefs(rolloutID, ns, refs)
 			}
 		}
@@ -2627,7 +2631,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			},
 		})
 
-		refs := extractWorkloadReferences(ds.Spec.Template.Spec)
+		refs := extractWorkloadReferences(ds.Spec.Template.Spec, opts.ForRelationshipCache)
 		trackWorkloadRefs(dsID, ds.Namespace, refs)
 	}
 
@@ -2679,7 +2683,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			},
 		})
 
-		refs := extractWorkloadReferences(sts.Spec.Template.Spec)
+		refs := extractWorkloadReferences(sts.Spec.Template.Spec, opts.ForRelationshipCache)
 		trackWorkloadRefs(stsID, sts.Namespace, refs)
 	}
 
@@ -2718,7 +2722,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		})
 
 		// Track ConfigMap/Secret/PVC references
-		refs := extractWorkloadReferences(cj.Spec.JobTemplate.Spec.Template.Spec)
+		refs := extractWorkloadReferences(cj.Spec.JobTemplate.Spec.Template.Spec, opts.ForRelationshipCache)
 		trackWorkloadRefs(cjID, cj.Namespace, refs)
 	}
 
@@ -2938,7 +2942,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 		})
 
 		// Track ConfigMap/Secret/PVC references
-		refs := extractWorkloadReferences(job.Spec.Template.Spec)
+		refs := extractWorkloadReferences(job.Spec.Template.Spec, opts.ForRelationshipCache)
 		trackWorkloadRefs(jobID, job.Namespace, refs)
 
 		// Connect to owner CronJob or KEDA ScaledJob
@@ -3133,6 +3137,10 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				Data:   rsData,
 			})
 
+			if opts.ForRelationshipCache {
+				trackWorkloadRefs(rsID, rs.Namespace, extractWorkloadReferences(rs.Spec.Template.Spec, true))
+			}
+
 			// Connect to owner Deployment or Rollout
 			for _, ownerRef := range rs.OwnerReferences {
 				if !ownerGroupMatches(ownerRef.Kind, ownerRef.APIVersion) {
@@ -3172,6 +3180,43 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			warnings = append(warnings, fmt.Sprintf("Failed to list Pods: %v", psErr))
 		}
 		pods = ps
+	}
+
+	// Admitted defaults describe individual Pods, not application boundaries.
+	// Retain observed targets for per-Pod projection even when Pods are grouped.
+	podConfigTargets := make(map[workloadRefKey]bool)
+	podSecretTargets := make(map[workloadRefKey]bool)
+	podPVCTargets := make(map[workloadRefKey]bool)
+	podServiceAccountTargets := make(map[workloadRefKey]bool)
+	podConsumers := make(map[string][]ResourceRef)
+	if opts.ForRelationshipCache {
+		for _, pod := range pods {
+			if !opts.MatchesNamespaceFilter(pod.Namespace) {
+				continue
+			}
+			seen := make(map[configrefs.Ref]bool)
+			configrefs.VisitPodSpecReferences(pod.Namespace, pod.Spec, func(ref configrefs.PodSpecReference) {
+				if seen[ref.Ref] {
+					return
+				}
+				seen[ref.Ref] = true
+				key := workloadRefKey{namespace: ref.Namespace, name: ref.Name}
+				if ref.Kind == "ConfigMap" || ref.Kind == "Secret" || ref.Kind == "PersistentVolumeClaim" || ref.Kind == "ServiceAccount" {
+					identity := resourceid.ResourceKey("", ref.Kind, ref.Namespace, ref.Name)
+					podConsumers[identity] = append(podConsumers[identity], ResourceRef{Kind: "Pod", Namespace: pod.Namespace, Name: pod.Name})
+				}
+				switch ref.Kind {
+				case "ConfigMap":
+					podConfigTargets[key] = true
+				case "Secret":
+					podSecretTargets[key] = true
+				case "PersistentVolumeClaim":
+					podPVCTargets[key] = true
+				case "ServiceAccount":
+					podServiceAccountTargets[key] = true
+				}
+			})
+		}
 	}
 	// podSummaries accumulates per-workload pod health in summary mode; stamped
 	// onto the workload nodes just before return. Empty (and the stamp a no-op)
@@ -3807,7 +3852,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				})
 			}
 
-			if len(consumers) > 0 {
+			if len(consumers) > 0 || podConfigTargets[workloadRefKey{namespace: cm.Namespace, name: cm.Name}] {
 				nodes = append(nodes, configMapNode(cm))
 			}
 		}
@@ -3854,7 +3899,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				})
 			}
 
-			if len(consumers) > 0 {
+			if len(consumers) > 0 || podSecretTargets[workloadRefKey{namespace: secret.Namespace, name: secret.Name}] {
 				visibleSecretIDs[workloadRefKey{namespace: secret.Namespace, name: secret.Name}] = secretID
 				nodes = append(nodes, secretNode(secret))
 			}
@@ -3879,7 +3924,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 			}
 			key := workloadRefKey{namespace: serviceAccount.Namespace, name: serviceAccount.Name}
 			consumers := consumersByServiceAccount[key]
-			if len(consumers) == 0 {
+			if len(consumers) == 0 && !podServiceAccountTargets[key] {
 				continue
 			}
 			serviceAccountID := fmt.Sprintf("serviceaccount/%s/%s", serviceAccount.Namespace, serviceAccount.Name)
@@ -3961,7 +4006,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 				})
 			}
 
-			if len(consumers) > 0 {
+			if len(consumers) > 0 || podPVCTargets[workloadRefKey{namespace: pvc.Namespace, name: pvc.Name}] {
 				// Get storage info
 				var storageSize string
 				if pvc.Spec.Resources.Requests != nil {
@@ -5732,7 +5777,7 @@ func (b *Builder) buildResourcesTopology(opts BuildOptions) (*Topology, error) {
 	// Summary mode: stamp collapsed pod counts onto their workload nodes.
 	stampPodSummaries(nodes, podSummaries)
 
-	topo := &Topology{Nodes: stampAuditKeys(nodes), Edges: edges, Warnings: warnings}
+	topo := &Topology{Nodes: stampAuditKeys(nodes), Edges: edges, Warnings: warnings, podConsumers: podConsumers}
 
 	// Add CRD discovery status
 	if b.dynamic != nil {
@@ -8056,153 +8101,91 @@ type workloadRefs struct {
 	serviceAccount string
 }
 
-func extractWorkloadReferences(spec corev1.PodSpec) workloadRefs {
-	refs := workloadRefs{
-		configMaps:     make(map[string]bool),
-		secrets:        make(map[string]bool),
-		pvcs:           make(map[string]bool),
-		serviceAccount: spec.ServiceAccountName,
-	}
-
-	// From containers
-	for _, container := range append(spec.Containers, spec.InitContainers...) {
-		for _, env := range container.Env {
-			if env.ValueFrom != nil {
-				if env.ValueFrom.ConfigMapKeyRef != nil {
-					refs.configMaps[env.ValueFrom.ConfigMapKeyRef.Name] = true
-				}
-				if env.ValueFrom.SecretKeyRef != nil {
-					refs.secrets[env.ValueFrom.SecretKeyRef.Name] = true
+func extractWorkloadReferences(spec corev1.PodSpec, forRelationships bool) workloadRefs {
+	refs := workloadRefs{configMaps: map[string]bool{}, secrets: map[string]bool{}, pvcs: map[string]bool{}, serviceAccount: spec.ServiceAccountName}
+	configrefs.VisitPodSpecReferences("", spec, func(reference configrefs.PodSpecReference) {
+		// Expanded declaration paths belong in resource reads, without redefining application grouping.
+		if !forRelationships {
+			switch reference.Path {
+			case "volumes[].configMap.name", "volumes[].secret.secretName", "volumes[].persistentVolumeClaim.claimName", "serviceAccountName":
+			default:
+				if !strings.HasPrefix(reference.Path, "containers[].env") && !strings.HasPrefix(reference.Path, "initContainers[].env") {
+					return
 				}
 			}
 		}
-		for _, envFrom := range container.EnvFrom {
-			if envFrom.ConfigMapRef != nil {
-				refs.configMaps[envFrom.ConfigMapRef.Name] = true
-			}
-			if envFrom.SecretRef != nil {
-				refs.secrets[envFrom.SecretRef.Name] = true
-			}
+		switch reference.Kind {
+		case "ConfigMap":
+			refs.configMaps[reference.Name] = true
+		case "Secret":
+			refs.secrets[reference.Name] = true
+		case "PersistentVolumeClaim":
+			refs.pvcs[reference.Name] = true
 		}
-	}
-
-	// From volumes
-	for _, volume := range spec.Volumes {
-		if volume.ConfigMap != nil {
-			refs.configMaps[volume.ConfigMap.Name] = true
-		}
-		if volume.Secret != nil {
-			refs.secrets[volume.Secret.SecretName] = true
-		}
-		if volume.PersistentVolumeClaim != nil {
-			refs.pvcs[volume.PersistentVolumeClaim.ClaimName] = true
-		}
-	}
-
+	})
 	return refs
 }
 
-// extractWorkloadReferencesFromMap extracts ConfigMap/Secret/PVC refs from unstructured pod spec
-func extractWorkloadReferencesFromMap(spec map[string]any) workloadRefs {
-	refs := workloadRefs{
-		configMaps: make(map[string]bool),
-		secrets:    make(map[string]bool),
-		pvcs:       make(map[string]bool),
+func extractWorkloadReferencesFromMap(spec map[string]any, forRelationships bool) (workloadRefs, error) {
+	var podSpec corev1.PodSpec
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(spec, &podSpec); err != nil {
+		return recoverWorkloadReferencesFromMap(spec, forRelationships), err
 	}
+	return extractWorkloadReferences(podSpec, forRelationships), nil
+}
 
-	// Helper to get string from nested map
-	getString := func(m map[string]any, key string) string {
-		if v, ok := m[key]; ok {
-			if s, ok := v.(string); ok {
-				return s
-			}
-		}
-		return ""
-	}
-	refs.serviceAccount = getString(spec, "serviceAccountName")
-
-	// Process containers
-	processContainers := func(containersField string) {
-		containers, ok := spec[containersField].([]any)
-		if !ok {
+// Unrelated malformed fields must not hide declarations that can still be read.
+func recoverWorkloadReferencesFromMap(spec map[string]any, forRelationships bool) workloadRefs {
+	refs := extractWorkloadReferences(corev1.PodSpec{}, forRelationships)
+	collect := func(part map[string]any) {
+		var podSpec corev1.PodSpec
+		if runtime.DefaultUnstructuredConverter.FromUnstructured(part, &podSpec) != nil {
 			return
 		}
-		for _, c := range containers {
-			container, ok := c.(map[string]any)
-			if !ok {
-				continue
-			}
-			// Check env
-			if env, ok := container["env"].([]any); ok {
-				for _, e := range env {
-					envVar, ok := e.(map[string]any)
-					if !ok {
-						continue
+		partRefs := extractWorkloadReferences(podSpec, forRelationships)
+		maps.Copy(refs.configMaps, partRefs.configMaps)
+		maps.Copy(refs.secrets, partRefs.secrets)
+		maps.Copy(refs.pvcs, partRefs.pvcs)
+		if partRefs.serviceAccount != "" {
+			refs.serviceAccount = partRefs.serviceAccount
+		}
+	}
+	for _, field := range []string{"containers", "initContainers", "ephemeralContainers"} {
+		containers, _ := spec[field].([]any)
+		for _, raw := range containers {
+			container, _ := raw.(map[string]any)
+			for _, envField := range []string{"env", "envFrom"} {
+				entries, _ := container[envField].([]any)
+				for _, entry := range entries {
+					if envField == "env" {
+						variable, _ := entry.(map[string]any)
+						entry = map[string]any{"valueFrom": variable["valueFrom"]}
 					}
-					if valueFrom, ok := envVar["valueFrom"].(map[string]any); ok {
-						if cmRef, ok := valueFrom["configMapKeyRef"].(map[string]any); ok {
-							if name := getString(cmRef, "name"); name != "" {
-								refs.configMaps[name] = true
-							}
-						}
-						if secRef, ok := valueFrom["secretKeyRef"].(map[string]any); ok {
-							if name := getString(secRef, "name"); name != "" {
-								refs.secrets[name] = true
-							}
-						}
-					}
-				}
-			}
-			// Check envFrom
-			if envFrom, ok := container["envFrom"].([]any); ok {
-				for _, ef := range envFrom {
-					envFromItem, ok := ef.(map[string]any)
-					if !ok {
-						continue
-					}
-					if cmRef, ok := envFromItem["configMapRef"].(map[string]any); ok {
-						if name := getString(cmRef, "name"); name != "" {
-							refs.configMaps[name] = true
-						}
-					}
-					if secRef, ok := envFromItem["secretRef"].(map[string]any); ok {
-						if name := getString(secRef, "name"); name != "" {
-							refs.secrets[name] = true
-						}
-					}
+					collect(map[string]any{field: []any{map[string]any{envField: []any{entry}}}})
 				}
 			}
 		}
 	}
-
-	processContainers("containers")
-	processContainers("initContainers")
-
-	// Process volumes
-	if volumes, ok := spec["volumes"].([]any); ok {
-		for _, v := range volumes {
-			volume, ok := v.(map[string]any)
-			if !ok {
-				continue
-			}
-			if cm, ok := volume["configMap"].(map[string]any); ok {
-				if name := getString(cm, "name"); name != "" {
-					refs.configMaps[name] = true
+	volumes, _ := spec["volumes"].([]any)
+	for _, raw := range volumes {
+		volume, _ := raw.(map[string]any)
+		for field, value := range volume {
+			if field == "projected" {
+				projection, _ := value.(map[string]any)
+				sources, _ := projection["sources"].([]any)
+				for _, source := range sources {
+					collect(map[string]any{"volumes": []any{map[string]any{"projected": map[string]any{"sources": []any{source}}}}})
 				}
-			}
-			if sec, ok := volume["secret"].(map[string]any); ok {
-				if name := getString(sec, "secretName"); name != "" {
-					refs.secrets[name] = true
-				}
-			}
-			if pvc, ok := volume["persistentVolumeClaim"].(map[string]any); ok {
-				if name := getString(pvc, "claimName"); name != "" {
-					refs.pvcs[name] = true
-				}
+			} else {
+				collect(map[string]any{"volumes": []any{map[string]any{field: value}}})
 			}
 		}
 	}
-
+	pullSecrets, _ := spec["imagePullSecrets"].([]any)
+	for _, secret := range pullSecrets {
+		collect(map[string]any{"imagePullSecrets": []any{secret}})
+	}
+	collect(map[string]any{"serviceAccountName": spec["serviceAccountName"]})
 	return refs
 }
 
