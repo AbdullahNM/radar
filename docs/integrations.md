@@ -307,6 +307,8 @@ Radar has first-class renderers for **AWS (CAPA)**, **GCP (CAPG)**, and **Azure 
 
 **Detail View:** Target workload, update mode, per-container resource recommendations (target, lower bound, upper bound, uncapped), resource policy, and conditions.
 
+Target links use the API group in `targetRef.apiVersion`. Built-in targets without an API version use their standard group.
+
 **Problem Detection:** Alerts for unsupported configurations, missing recommendations, and low confidence scores.
 
 ### Supported CRDs

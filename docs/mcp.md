@@ -550,6 +550,10 @@ it does not scale it. These references carry API group and namespace identity,
 are filtered by the caller's reference permissions, and do not establish that
 a controller has successfully reconciled the dependency.
 
+A KEDA ScaledObject summary's `target` includes its API group, for example `Deployment (apps)/web`. Missing or empty target kind and API version default to `Deployment` and `apps/v1`; a `Rollout` target without an API version is reported as `Rollout (apps)/worker`.
+
+HPA `hpaSummary.metrics` matches current values to targets by source and selector. Targets without a current value have `status: missing`; unmatched observations have `status: status_only`. Core Namespace metric names use the HPA's namespace.
+
 Resource context exposes routing direction through `exposedBy` (upstream
 resources routing to this resource, including entrypoints reached through a
 selecting Service) and `backends` (resources this routes to). The compatibility
