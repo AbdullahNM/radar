@@ -96,12 +96,15 @@ type Detection struct {
 	Reason                     string
 	Message                    string
 	RawMessage                 string
-	Age                        string // human-readable
-	AgeSeconds                 int64  // for sorting
-	Duration                   string // how long the problem has persisted
-	DurationSeconds            int64
-	OnsetAt                    time.Time
-	ResourceCreatedAt          time.Time
+	// MessageSource is issuesapi.MessageSourceRadar when Message is Radar's
+	// own summary rather than text from Kubernetes or a controller.
+	MessageSource     string
+	Age               string // human-readable
+	AgeSeconds        int64  // for sorting
+	Duration          string // how long the problem has persisted
+	DurationSeconds   int64
+	OnsetAt           time.Time
+	ResourceCreatedAt time.Time
 	// OnsetUnknown is set when the snapshot proves the issue exists but carries
 	// no defensible evidence for when the failing state began. Resource age may
 	// still be populated independently.
@@ -118,6 +121,11 @@ type Detection struct {
 	// RestartLoop is set on a Pod crashloop row emitted because a container is
 	// in an active restart loop (see activeRestartLoop). Nil otherwise.
 	RestartLoop *issuesapi.RestartLoop
+	// AffectedRefs names resources a detection on another subject affects
+	// (the Services, workloads and Pods a NetworkPolicy isolates), so the issue
+	// also shows up on those resources. Ordered most to least important; the
+	// issues layer caps them.
+	AffectedRefs []issuesapi.Ref `json:"-"`
 	// RequiredReads names the inventories a detection read beyond its own
 	// resource whose access is checked per kind, such as a Secret's history.
 	// A caller who can't make them gets Degraded instead, or nothing when
@@ -741,6 +749,7 @@ func DetectProblems(cache *ResourceCache, namespace string) []Detection {
 			problems = append(problems, detectServiceBackendProblems(cache, svc, podsByNamespace[svc.Namespace], now)...)
 		}
 	}
+	problems = append(problems, detectNetworkPolicyDenyAllIngress(cache, namespace, podsByNamespace, now)...)
 
 	// HPA problems
 	if hpaLister := cache.HorizontalPodAutoscalers(); hpaLister != nil {
