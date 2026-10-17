@@ -16,18 +16,26 @@ import (
 
 type fakeProvider struct {
 	typed                 map[string][]runtime.Object
+	typedErr              map[string]error
 	dynamic               map[schema.GroupVersionResource][]*unstructured.Unstructured
+	dynamicErrNamespaces  map[string]bool
 	kinds                 map[schema.GroupVersionResource]string
 	namespaced            map[schema.GroupVersionResource]bool
 	dynamicListNamespaces []string
 }
 
 func (f *fakeProvider) ListTyped(kind string, namespaces []string) ([]runtime.Object, error) {
+	if err := f.typedErr[kind]; err != nil {
+		return nil, err
+	}
 	return f.typed[kind], nil
 }
 
 func (f *fakeProvider) ListDynamic(_ context.Context, gvr schema.GroupVersionResource, namespace string) ([]*unstructured.Unstructured, error) {
 	f.dynamicListNamespaces = append(f.dynamicListNamespaces, namespace)
+	if f.dynamicErrNamespaces[namespace] {
+		return nil, fmt.Errorf("list %s in %s: forbidden", gvr.Resource, namespace)
+	}
 	return f.dynamic[gvr], nil
 }
 
