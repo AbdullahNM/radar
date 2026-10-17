@@ -59,6 +59,12 @@ func LogTiming(format string, args ...any) {
 
 var logTiming = LogTiming
 
+// InitialSyncComplete reports whether the current cache has finished its
+// initial sync, after which an add is an object Radar had not seen before.
+func InitialSyncComplete() bool {
+	return initialSyncComplete.Load()
+}
+
 // initialSyncComplete is set to true after the initial cache sync completes.
 // During initial sync, "add" events are skipped since they represent existing
 // resources, not new creations. Only adds after sync are recorded.
@@ -422,11 +428,12 @@ func InitResourceCache(ctx context.Context) error {
 				secretWriteTimes.capture(obj)
 			},
 
-			OnObservedChange: func(change k8score.ResourceChange, obj, _ any) {
+			OnObservedChange: func(change k8score.ResourceChange, obj, oldObj any) {
 				secretWriteTimes.reconcile(change, obj)
 				if cj, ok := obj.(*batchv1.CronJob); ok {
 					cronJobScheduleObservations.observe(change.Operation, cj)
 				}
+				notifyResourceObservers(client, change, obj, oldObj)
 			},
 
 			OnChange: func(change k8score.ResourceChange, obj, oldObj any) {
