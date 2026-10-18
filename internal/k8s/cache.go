@@ -126,7 +126,8 @@ type ResourceChange = k8score.ResourceChange
 // status, pod workload lookup, timeline integration).
 type ResourceCache struct {
 	*k8score.ResourceCache
-	secretsEnabled bool // Whether secrets informer is running (requires RBAC)
+	permissionResult *PermissionCheckResult
+	secretsEnabled   bool // Whether secrets informer is running (requires RBAC)
 	// argoDrift tracks how long each manual-sync ArgoCD Application has been
 	// continuously OutOfSync. Lives here so its lifecycle is the cache's:
 	// recreated per cluster, dropped on a kubeconfig context switch.
@@ -498,6 +499,7 @@ func InitResourceCache(ctx context.Context) error {
 		}
 
 		wrapped := &ResourceCache{
+			permissionResult:            clonePermissionCheckResult(permResult),
 			secretsEnabled:              scopes["secrets"].Enabled,
 			argoDrift:                   newArgoDriftTracker(),
 			cronJobScheduleObservations: cronJobScheduleObservations,
@@ -1534,7 +1536,7 @@ func (c *ResourceCache) ListDynamicWithGroup(ctx context.Context, kind string, n
 		return nil, fmt.Errorf("%w: dynamic cache", ErrDynamicNotReady)
 	}
 
-	if shouldBypassDynamicInformer(gvr) {
+	if ShouldBypassDynamicInformer(gvr) {
 		return dynamicCache.ListDirect(ctx, gvr, namespace)
 	}
 
@@ -1595,7 +1597,7 @@ func builtinGVRFallback(kind, group string) (schema.GroupVersionResource, bool) 
 	return BuiltinGVR(kind, group)
 }
 
-func shouldBypassDynamicInformer(gvr schema.GroupVersionResource) bool {
+func ShouldBypassDynamicInformer(gvr schema.GroupVersionResource) bool {
 	return (gvr.Group == "discovery.k8s.io" && gvr.Resource == "endpointslices") ||
 		(gvr.Group == "coordination.k8s.io" && gvr.Resource == "leases") ||
 		(gvr.Group == "" && gvr.Resource == "endpoints")
@@ -1688,7 +1690,7 @@ func (c *ResourceCache) getDynamicWithGroup(ctx context.Context, kind string, na
 	var err error
 	if preserveLastApplied {
 		u, err = dynamicCache.GetDirectPreserveLastApplied(ctx, gvr, namespace, name)
-	} else if shouldBypassDynamicInformer(gvr) {
+	} else if ShouldBypassDynamicInformer(gvr) {
 		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)
 	} else if gvr.Group == "apiextensions.k8s.io" && gvr.Resource == "customresourcedefinitions" {
 		u, err = dynamicCache.GetDirect(ctx, gvr, namespace, name)
@@ -2289,6 +2291,15 @@ func (rc *ResourceCache) ReadableCount(resource string, namespaces []string) (in
 		return 0, false
 	}
 	return rc.ResourceCache.ReadableCount(resource, namespaces)
+}
+
+// PermissionResult returns the probes that selected this cache's informer
+// scope. A later global refresh must not re-label rows from this cache.
+func (rc *ResourceCache) PermissionResult() *PermissionCheckResult {
+	if rc == nil {
+		return nil
+	}
+	return clonePermissionCheckResult(rc.permissionResult)
 }
 
 // bootstrapResourcePermissions runs the startup access probes that choose the
