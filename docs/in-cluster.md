@@ -483,6 +483,8 @@ You see what you have access to — Radar doesn't require cluster-admin. Whateve
 
 A namespace-scoped ServiceAccount (RoleBinding without a ClusterRole) is fully supported — Radar detects this at startup and works within the permitted namespace.
 
+**Stalled API requests.** If a read from the Kubernetes API stalls without the connection resetting (for example, a proxy whose upstream dropped silently), Radar ends it after 60 seconds with no data and retries, instead of freezing that resource's data until a restart. Slow transfers that keep making progress are never cut, and log streams, exec and port-forward are unaffected.
+
 **RBAC granularity (auth enabled):**
 
 - Namespaced resources (Pods, Deployments, Services, …) are filtered by namespace: read access is granted in any namespace where the user has list-pods or list-deployments. **Secrets are gated independently** — a user sees Secret objects (including Helm release storage) only in namespaces where their own RBAC grants `list secrets`, even when they have broader access in that namespace. RBAC objects and webhook configurations are likewise re-checked per user. Other cached resource types are visible within a namespace once the user has workload-read access there.
