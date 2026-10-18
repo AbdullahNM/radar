@@ -112,6 +112,7 @@ func main() {
 	trustedOrigins := flag.String("trusted-origins", os.Getenv("RADAR_TRUSTED_ORIGINS"), "Comma-separated origins, besides the address Radar is opened at, that may use Radar's API, including changes and terminals (e.g. http://radar.internal). Set this when a proxy in front of Radar rewrites the Host header and changes fail with \"Radar refused this request\". Exact origins only, no wildcards. Does not apply to /mcp (see RADAR_MCP_TRUSTED_ORIGINS). Env: RADAR_TRUSTED_ORIGINS")
 	noBrowser := flag.Bool("no-browser", fileCfg.NoBrowser, "Don't auto-open browser")
 	browser := flag.String("browser", fileCfg.Browser, "Browser to use when opening the UI (default: OS default browser; macOS app names supported)")
+	noVersionCheck := flag.Bool("no-version-check", fileCfg.NoVersionCheck, "Disable automatic check for newer Radar versions and releases (also enabled via RADAR_DISABLE_VERSION_CHECK=1 or DO_NOT_TRACK=1)")
 	devMode := flag.Bool("dev", false, "Development mode (serve frontend from filesystem)")
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	historyLimit := flag.Int("history-limit", fileCfg.HistoryLimitOr(10000), "Maximum number of events to retain in timeline")
@@ -209,6 +210,9 @@ func main() {
 	namespaceListTimeout := flag.Duration("namespace-list-timeout", k8s.EnvDurationOr("RADAR_NAMESPACE_LIST_TIMEOUT", 5*time.Second), "Timeout for the cluster-wide namespace LIST used to decide if the user is RBAC-namespace-restricted (default: 5s). Widen to 30s or more on slow control planes — a timeout here is misreported in the UI as 'Limited list — RBAC'. Env: RADAR_NAMESPACE_LIST_TIMEOUT")
 	maxScopeCandidates := flag.Int("max-scope-candidates", k8s.EnvIntOr("RADAR_MAX_SCOPE_CANDIDATES", 20), "Cap on the namespace-fallback probe fanout for users who can list namespaces cluster-wide but not list a specific kind cluster-wide (default: 20). Raise for clusters with more than 20 namespaces to avoid silently marking kinds as denied in dropped namespaces. Env: RADAR_MAX_SCOPE_CANDIDATES")
 	flag.Parse()
+	if *noVersionCheck {
+		versionpkg.SetDisabled(true)
+	}
 	if *workloadSingleCluster || len(workloadClusterLabels) > 0 {
 		if _, err := (prom.WorkloadMetricsScope{SingleCluster: *workloadSingleCluster, ClusterLabels: workloadClusterLabels}).Matchers(); err != nil {
 			log.Fatalf("Invalid workload metrics scope: %v", err)
