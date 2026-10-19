@@ -79,10 +79,13 @@ func main() {
 	// The release-only lookup is cached and cheap relative to the probe run it precedes.
 	if !versionpkg.IsReleaseVersion(version) {
 		reachability.LatestReleaseImage = func() string {
+			if versionpkg.IsDisabled() {
+				return "ghcr.io/skyhook-io/radar:latest"
+			}
 			if u := versionpkg.CheckForUpdateRelease(context.Background()); u != nil && u.LatestVersion != "" {
 				return "ghcr.io/skyhook-io/radar:" + u.LatestVersion
 			}
-			return ""
+			return "ghcr.io/skyhook-io/radar:latest"
 		}
 	}
 

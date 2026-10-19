@@ -146,12 +146,15 @@ func IsDisabled() bool {
 	return false
 }
 
+const defaultReleasesURL = "https://github.com/skyhook-io/radar/releases"
+
 func disabledUpdateInfo() *UpdateInfo {
 	method := detectInstallMethod()
 	return &UpdateInfo{
 		CurrentVersion: Current,
 		InstallMethod:  method,
 		UpdateCommand:  getUpdateCommand(method),
+		ReleaseURL:     defaultReleasesURL,
 	}
 }
 

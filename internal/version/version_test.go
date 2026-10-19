@@ -591,6 +591,9 @@ func TestCheckForUpdateDisabledByFlag(t *testing.T) {
 	if info.LatestVersion != "" {
 		t.Errorf("expected LatestVersion to be empty when disabled, got %q", info.LatestVersion)
 	}
+	if info.ReleaseURL != defaultReleasesURL {
+		t.Errorf("expected ReleaseURL to be %q when disabled, got %q", defaultReleasesURL, info.ReleaseURL)
+	}
 	if requestCount != 0 {
 		t.Errorf("CheckForUpdate made %d HTTP requests when disabled, want 0", requestCount)
 	}
