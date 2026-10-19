@@ -401,3 +401,29 @@ func TestOmitemptyFields(t *testing.T) {
 		t.Errorf("zero-value Config should marshal to {}, got %s", data)
 	}
 }
+
+func TestResolveMCPReadOnlyDefault(t *testing.T) {
+	tests := []struct {
+		name    string
+		fileVal bool
+		envVal  string
+		want    bool
+	}{
+		{"empty env falls back to fileCfg false", false, "", false},
+		{"empty env falls back to fileCfg true", true, "", true},
+		{"env 1 overrides fileCfg false", false, "1", true},
+		{"env true overrides fileCfg false", false, "true", true},
+		{"env TRUE overrides fileCfg false", false, "TRUE", true},
+		{"env 0 overrides fileCfg true", true, "0", false},
+		{"env false overrides fileCfg true", true, "false", false},
+		{"env FALSE overrides fileCfg true", true, "FALSE", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveMCPReadOnlyDefault(tt.fileVal, tt.envVal)
+			if got != tt.want {
+				t.Errorf("ResolveMCPReadOnlyDefault(%v, %q) = %v, want %v", tt.fileVal, tt.envVal, got, tt.want)
+			}
+		})
+	}
+}

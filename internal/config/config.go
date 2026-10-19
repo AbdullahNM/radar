@@ -48,6 +48,7 @@ type Config struct {
 	PrometheusHeaders        map[string]string `json:"prometheusHeaders,omitempty"`
 	PrometheusHeadersFromEnv map[string]string `json:"prometheusHeadersFromEnv,omitempty"`
 	MCP                      *bool             `json:"mcp,omitempty"` // nil = default (true), false = disabled
+	MCPReadOnly              bool              `json:"mcpReadOnly,omitempty"` // true = mount only read-only and investigation tools
 	// DebugImage is the image used for ephemeral debug containers and node debug
 	// pods. Empty falls back to busybox:latest; set it to a reachable mirror for
 	// air-gapped / private-registry clusters.
@@ -228,6 +229,15 @@ func (c Config) MCPEnabledOr(def bool) bool {
 		return *c.MCP
 	}
 	return def
+}
+
+// ResolveMCPReadOnlyDefault determines the default value for the --mcp-read-only
+// flag, honoring RADAR_MCP_READ_ONLY if set and falling back to the config file.
+func ResolveMCPReadOnlyDefault(fileVal bool, envVal string) bool {
+	if envVal != "" {
+		return envVal == "1" || strings.EqualFold(envVal, "true")
+	}
+	return fileVal
 }
 
 // RestoreLastDesktopContextOr returns *c.RestoreLastDesktopContext if non-nil, otherwise the

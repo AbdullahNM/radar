@@ -30,6 +30,7 @@ type startupLogSummary struct {
 	proxyUserHeader      string
 	proxyGroupsHeader    string
 	mcpEnabled           bool
+	mcpReadOnly          bool
 	aiAgent              string
 	aiCLIOverride        string
 	configManagement     string
@@ -54,6 +55,7 @@ func (s *Server) logStartupSummaryBlock() {
 		proxyUserHeader:      s.authConfig.UserHeader,
 		proxyGroupsHeader:    s.authConfig.GroupsHeader,
 		mcpEnabled:           s.mcpHandler != nil,
+		mcpReadOnly:          s.mcpHandler == nil && s.mcpReadOnlyHandler != nil,
 		aiAgent:              aiAgent,
 		aiCLIOverride:        strings.TrimSpace(os.Getenv("RADAR_AI_CLI_BIN")),
 		configManagement:     s.configManagement(),
@@ -141,6 +143,8 @@ func formatStartupLogSummary(summary startupLogSummary, color bool) []string {
 
 	if summary.mcpEnabled {
 		lines = append(lines, row("MCP", "enabled at /mcp"))
+	} else if summary.mcpReadOnly {
+		lines = append(lines, row("MCP", "enabled (read-only at /mcp-readonly)"))
 	} else {
 		lines = append(lines, row("MCP", "disabled"))
 	}
@@ -232,7 +236,7 @@ func startupAIStatus(summary startupLogSummary) string {
 		return "enabled via " + summary.aiAgent
 	case authMode != "" && authMode != "none":
 		return "disabled (not available when authentication is enabled)"
-	case !summary.mcpEnabled:
+	case !summary.mcpEnabled && !summary.mcpReadOnly:
 		return "disabled (needs MCP; remove --no-mcp)"
 	case summary.kubeconfig.Mode == "in-cluster":
 		return "disabled (not available when Radar runs inside the cluster)"

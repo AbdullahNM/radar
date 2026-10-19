@@ -123,21 +123,23 @@ func TestHandleDiagnoseTurnRejectsBlankVerification(t *testing.T) {
 func TestListAgents_Eligible(t *testing.T) {
 	mcp := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
 	cases := []struct {
-		name string
-		mode string
-		mcp  http.Handler
-		want bool
+		name             string
+		mode             string
+		mcp              http.Handler
+		mcpInvestigation http.Handler
+		want             bool
 	}{
-		{"local mode + mcp mounted", "none", mcp, true},
-		{"auth enabled", "proxy", mcp, false},
-		{"mcp disabled", "none", nil, false},
+		{"local mode + mcp mounted", "none", mcp, mcp, true},
+		{"local mode + read-only mcp", "none", nil, mcp, true},
+		{"auth enabled", "proxy", mcp, mcp, false},
+		{"mcp disabled", "none", nil, nil, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			s := &Server{
 				authConfig:              auth.Config{Mode: c.mode},
 				mcpHandler:              c.mcp,
-				mcpInvestigationHandler: c.mcp,
+				mcpInvestigationHandler: c.mcpInvestigation,
 				aiInvestigationRefs:     investigationrefs.NewRegistry(),
 			}
 			rec := httptest.NewRecorder()
@@ -152,6 +154,61 @@ func TestListAgents_Eligible(t *testing.T) {
 				t.Errorf("eligible = %v, want %v", resp.Eligible, c.want)
 			}
 		})
+	}
+}
+
+func TestListAgents_ReadOnlyDisablesApply(t *testing.T) {
+	mcp := http.HandlerFunc(func(http.ResponseWriter, *http.Request) {})
+	s := &Server{
+		authConfig:              auth.Config{Mode: "none"},
+		mcpHandler:              nil,
+		mcpReadOnlyHandler:      mcp,
+		mcpInvestigationHandler: mcp,
+		aiInvestigationRefs:     investigationrefs.NewRegistry(),
+	}
+	rec := httptest.NewRecorder()
+	s.handleListAgents(rec, httptest.NewRequest(http.MethodGet, "/api/agents", nil))
+	var resp struct {
+		Eligible bool `json:"eligible"`
+		Agents   []struct {
+			Apply        bool `json:"apply"`
+			Verification bool `json:"verification"`
+		} `json:"agents"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !resp.Eligible {
+		t.Errorf("eligible = false, want true")
+	}
+	for _, a := range resp.Agents {
+		if a.Apply {
+			t.Errorf("agent.Apply = true, want false in read-only mode")
+		}
+	}
+}
+
+func TestHandleDiagnoseTurnRejectsApplyInReadOnlyMode(t *testing.T) {
+	m := ai.NewRunManager(nil, func() string { return "localhost:9280" }, "", func() string { return "fake-test" }, nil)
+	t.Cleanup(m.Shutdown)
+	s := &Server{
+		authConfig: auth.Config{Mode: "none"},
+		aiRuns:     m,
+		mcpHandler: nil, // read-only mode
+	}
+	body := strings.NewReader(`{"apply": true, "fix": "scale to 2"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/diagnose/runs/run-1/turns", body)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("id", "run-1")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	s.handleDiagnoseTurn(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "apply is not available in MCP read-only mode") {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
 	}
 }
 

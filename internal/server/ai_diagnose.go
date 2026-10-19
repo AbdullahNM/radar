@@ -210,7 +210,7 @@ func (s *Server) handleListAgents(w http.ResponseWriter, r *http.Request) {
 	// Every local agent runs through the run manager, which performs the
 	// confirmed apply turn and the verification that follows it.
 	for i := range agents {
-		agents[i].Apply = true
+		agents[i].Apply = s.mcpHandler != nil
 		agents[i].Verification = true
 	}
 	// eligible: this deployment can run local BYO-agent investigations, the same
@@ -479,6 +479,10 @@ func (s *Server) handleDiagnoseTurn(w http.ResponseWriter, r *http.Request) {
 	// is meant to close. Require the confirmed fix.
 	if body.Apply && strings.TrimSpace(body.Fix) == "" {
 		s.writeError(w, http.StatusBadRequest, "apply requires the confirmed fix text")
+		return
+	}
+	if body.Apply && s.mcpHandler == nil {
+		s.writeError(w, http.StatusBadRequest, "apply is not available in MCP read-only mode")
 		return
 	}
 	var err error

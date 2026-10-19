@@ -1378,7 +1378,8 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	responseCaps := *caps
 	caps = &responseCaps
 
-	caps.MCPEnabled = s.mcpHandler != nil
+	caps.MCPEnabled = s.mcpHandler != nil || s.mcpReadOnlyHandler != nil
+	caps.MCPReadOnly = s.mcpHandler == nil && s.mcpReadOnlyHandler != nil
 	caps.Deployment = k8s.DeploymentInfo{Mode: deploymentMode()}
 	caps.CloudConnect = s.cloudConnectCapability()
 	caps.Features = k8s.FeatureCapabilities{

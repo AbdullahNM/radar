@@ -158,6 +158,8 @@ func main() {
 	beylaJobSelector := flag.String("beyla-job-selector", "", `PromQL matcher fragment for Beyla Live Traffic, e.g. 'job=~"my-beyla.*"' (empty = *beyla* or *alloy* jobs). Workload charts use this override only with an explicit Prometheus scope flag and accept one job equality or regex matcher; automatic workload matching discovers custom jobs without it.`)
 	// MCP server
 	noMCP := flag.Bool("no-mcp", !fileCfg.MCPEnabledOr(true), "Disable MCP (Model Context Protocol) server for AI tools")
+	mcpReadOnlyDefault := config.ResolveMCPReadOnlyDefault(fileCfg.MCPReadOnly, os.Getenv("RADAR_MCP_READ_ONLY"))
+	mcpReadOnly := flag.Bool("mcp-read-only", mcpReadOnlyDefault, "Restrict MCP server to read-only inspection tools (disables /mcp write tools; also enabled via RADAR_MCP_READ_ONLY=1)")
 	mcpCatalogStdio := flag.Bool("mcp-catalog-stdio", false, "Start only the MCP catalog over stdio for registry/inspector introspection; skips Kubernetes initialization")
 	mcpCatalogOnly := flag.Bool("mcp-catalog-only", false, "Start only the MCP endpoint for registry/inspector catalog introspection; skips Kubernetes initialization")
 	// Auth flags
@@ -350,6 +352,7 @@ func main() {
 	if *mcpCatalogOnly || *mcpCatalogStdio {
 		mcpEnabled = true
 	}
+	mcpReadOnlyEffective := *mcpReadOnly
 
 	// Hub origin overrides for self-hosted control planes. When only the API
 	// origin is set, the frontend origin defaults to the same host — the
@@ -408,6 +411,7 @@ func main() {
 		BeylaJobSelector:            *beylaJobSelector,
 		WorkloadMetricsScope:        prom.WorkloadMetricsScope{SingleCluster: *workloadSingleCluster, ClusterLabels: workloadClusterLabels},
 		MCPEnabled:                  mcpEnabled,
+		MCPReadOnly:                 mcpReadOnlyEffective,
 		AIHistory:                   *aiHistory,
 		AIHistoryDBPath:             fileCfg.AIHistoryDBPath,
 		Version:                     version,

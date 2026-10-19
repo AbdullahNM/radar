@@ -2,8 +2,11 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -529,5 +532,143 @@ func TestValidateNamespaceFanout(t *testing.T) {
 	}
 	if err := validateNamespaceFanout(full[:19], "other", 20); err != nil {
 		t.Fatalf("cap-1 list with distinct context namespace should fit: %v", err)
+	}
+}
+
+func TestCreateServerMCPReadOnlyModes(t *testing.T) {
+	tests := []struct {
+		name                    string
+		cfg                     AppConfig
+		wantMCPStatus           int // status code for /mcp (404 = unmounted)
+		wantReadOnlyStatus      int // status code for /mcp-readonly
+		wantInvestigationStatus int // status code for /mcp-investigation
+		wantCapsMCPEnabled      bool
+		wantCapsMCPReadOnly     bool
+	}{
+		{
+			name: "full mcp",
+			cfg: AppConfig{
+				MCPEnabled:  true,
+				MCPReadOnly: false,
+			},
+			wantMCPStatus:           http.StatusMethodNotAllowed, // mounted; GET without stream returns 405
+			wantReadOnlyStatus:      http.StatusMethodNotAllowed, // mounted
+			wantInvestigationStatus: http.StatusMethodNotAllowed, // mounted
+			wantCapsMCPEnabled:      true,
+			wantCapsMCPReadOnly:     false,
+		},
+		{
+			name: "mcp read-only",
+			cfg: AppConfig{
+				MCPEnabled:  true,
+				MCPReadOnly: true,
+			},
+			wantMCPStatus:           http.StatusNotFound,        // /mcp is NOT mounted
+			wantReadOnlyStatus:      http.StatusMethodNotAllowed, // /mcp-readonly is mounted
+			wantInvestigationStatus: http.StatusMethodNotAllowed, // /mcp-investigation remains mounted
+			wantCapsMCPEnabled:      true,
+			wantCapsMCPReadOnly:     true,
+		},
+		{
+			name: "mcp disabled",
+			cfg: AppConfig{
+				MCPEnabled:  false,
+				MCPReadOnly: false,
+			},
+			wantMCPStatus:           http.StatusNotFound,
+			wantReadOnlyStatus:      http.StatusNotFound,
+			wantInvestigationStatus: http.StatusNotFound,
+			wantCapsMCPEnabled:      false,
+			wantCapsMCPReadOnly:     false,
+		},
+		{
+			name: "mcp disabled even if read-only is set",
+			cfg: AppConfig{
+				MCPEnabled:  false,
+				MCPReadOnly: true,
+			},
+			wantMCPStatus:           http.StatusNotFound,
+			wantReadOnlyStatus:      http.StatusNotFound,
+			wantInvestigationStatus: http.StatusNotFound,
+			wantCapsMCPEnabled:      false,
+			wantCapsMCPReadOnly:     false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := CreateServer(tt.cfg)
+			handler := srv.Handler()
+
+			// Test /mcp mount
+			wMCP := httptest.NewRecorder()
+			reqMCP := httptest.NewRequest(http.MethodGet, "http://localhost:9280/mcp", nil)
+			handler.ServeHTTP(wMCP, reqMCP)
+			if (tt.wantMCPStatus == http.StatusNotFound && wMCP.Code != http.StatusNotFound) ||
+				(tt.wantMCPStatus != http.StatusNotFound && wMCP.Code == http.StatusNotFound) {
+				t.Errorf("/mcp code = %d, want around %d", wMCP.Code, tt.wantMCPStatus)
+			}
+
+			// Test /mcp-readonly mount
+			wRO := httptest.NewRecorder()
+			reqRO := httptest.NewRequest(http.MethodGet, "http://localhost:9280/mcp-readonly", nil)
+			handler.ServeHTTP(wRO, reqRO)
+			if (tt.wantReadOnlyStatus == http.StatusNotFound && wRO.Code != http.StatusNotFound) ||
+				(tt.wantReadOnlyStatus != http.StatusNotFound && wRO.Code == http.StatusNotFound) {
+				t.Errorf("/mcp-readonly code = %d, want around %d", wRO.Code, tt.wantReadOnlyStatus)
+			}
+
+			// Test /mcp-investigation mount
+			wInv := httptest.NewRecorder()
+			reqInv := httptest.NewRequest(http.MethodGet, "http://localhost:9280/mcp-investigation", nil)
+			handler.ServeHTTP(wInv, reqInv)
+			if (tt.wantInvestigationStatus == http.StatusNotFound && wInv.Code != http.StatusNotFound) ||
+				(tt.wantInvestigationStatus != http.StatusNotFound && wInv.Code == http.StatusNotFound) {
+				t.Errorf("/mcp-investigation code = %d, want around %d", wInv.Code, tt.wantInvestigationStatus)
+			}
+
+			// Test /api/capabilities
+			wCaps := httptest.NewRecorder()
+			reqCaps := httptest.NewRequest(http.MethodGet, "http://localhost:9280/api/capabilities", nil)
+			handler.ServeHTTP(wCaps, reqCaps)
+			if wCaps.Code != http.StatusOK {
+				t.Fatalf("/api/capabilities code = %d, want 200", wCaps.Code)
+			}
+			var caps struct {
+				MCPEnabled  bool `json:"mcpEnabled"`
+				MCPReadOnly bool `json:"mcpReadOnly"`
+			}
+			if err := json.NewDecoder(wCaps.Body).Decode(&caps); err != nil {
+				t.Fatalf("decode capabilities: %v", err)
+			}
+			if caps.MCPEnabled != tt.wantCapsMCPEnabled {
+				t.Errorf("mcpEnabled = %v, want %v", caps.MCPEnabled, tt.wantCapsMCPEnabled)
+			}
+			if caps.MCPReadOnly != tt.wantCapsMCPReadOnly {
+				t.Errorf("mcpReadOnly = %v, want %v", caps.MCPReadOnly, tt.wantCapsMCPReadOnly)
+			}
+
+			// Test /api/diagnostics
+			wDiag := httptest.NewRecorder()
+			reqDiag := httptest.NewRequest(http.MethodGet, "http://localhost:9280/api/diagnostics", nil)
+			handler.ServeHTTP(wDiag, reqDiag)
+			if wDiag.Code == http.StatusOK {
+				var diag struct {
+					Config struct {
+						MCPEnabled  bool `json:"mcpEnabled"`
+						MCPReadOnly bool `json:"mcpReadOnly"`
+					} `json:"config"`
+				}
+				if err := json.NewDecoder(wDiag.Body).Decode(&diag); err != nil {
+					t.Fatalf("decode diagnostics: %v", err)
+				}
+				if diag.Config.MCPEnabled != tt.wantCapsMCPEnabled {
+					t.Errorf("diag mcpEnabled = %v, want %v", diag.Config.MCPEnabled, tt.wantCapsMCPEnabled)
+				}
+				if diag.Config.MCPReadOnly != tt.wantCapsMCPReadOnly {
+					t.Errorf("diag mcpReadOnly = %v, want %v", diag.Config.MCPReadOnly, tt.wantCapsMCPReadOnly)
+				}
+			}
+		})
 	}
 }

@@ -100,6 +100,7 @@ type Capabilities struct {
 	NodeWrite        bool                     `json:"nodeWrite"`               // Can patch nodes (cordon/uncordon/drain)
 	WorkloadWrites   WorkloadWritePermissions `json:"workloadWrites"`          // Can patch workload kinds (restart/scale controls)
 	MCPEnabled       bool                     `json:"mcpEnabled"`              // MCP server is running
+	MCPReadOnly      bool                     `json:"mcpReadOnly"`             // MCP server is running in read-only mode
 	Deployment       DeploymentInfo           `json:"deployment"`              // How / where this Radar binary is running. Tells the UI which chrome to render or suppress (e.g. embedded mode hides the cluster headline + local-MCP card because the hub already renders both).
 	Features         FeatureCapabilities      `json:"features"`                // Versioned server features that newer embedded frontends must negotiate
 	AuthEnabled      bool                     `json:"authEnabled,omitempty"`   // Auth is enabled on the server

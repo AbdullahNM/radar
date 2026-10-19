@@ -8,6 +8,7 @@ import (
 	"os"
 	goruntime "runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/skyhook-io/radar/internal/app"
@@ -70,6 +71,8 @@ func main() {
 	timelineMaxSize := flag.String("timeline-max-size", fileCfg.TimelineMaxSizeOr("1Gi"), "Maximum SQLite timeline storage size before pruning oldest events (e.g. 800Mi, 8Gi). 0 disables size-based pruning.")
 	prometheusURL := flag.String("prometheus-url", fileCfg.PrometheusURL, "Manual Prometheus/VictoriaMetrics URL (skips auto-discovery)")
 	openCostCurrency := flag.String("opencost-currency", fileCfg.OpenCostCurrency, "Override the ISO 4217 currency label for OpenCost values (empty: auto-detect, then USD)")
+	mcpReadOnlyDefault := config.ResolveMCPReadOnlyDefault(fileCfg.MCPReadOnly, os.Getenv("RADAR_MCP_READ_ONLY"))
+	mcpReadOnly := flag.Bool("mcp-read-only", mcpReadOnlyDefault, "Restrict MCP server to read-only inspection tools (disables /mcp write tools; also enabled via RADAR_MCP_READ_ONLY=1)")
 	flag.Parse()
 
 	if *showVersion {
@@ -167,6 +170,8 @@ func main() {
 		desktopPort = lastDesktopPort(desktopPortPath())
 	}
 
+	mcpReadOnlyEffective := *mcpReadOnly
+
 	cfg := app.AppConfig{
 		Kubeconfig:                resolvedKubeconfig,
 		KubeconfigDirs:            resolvedKubeconfigDirs,
@@ -205,6 +210,7 @@ func main() {
 		HubAPIURL:                 hubAPIURL,
 		HubAppURL:                 hubAppURL,
 		MCPEnabled:                fileCfg.MCPEnabledOr(true),
+		MCPReadOnly:               mcpReadOnlyEffective,
 		AIHistory:                 fileCfg.AIHistoryOr(true),
 		AIHistoryDBPath:           fileCfg.AIHistoryDBPath,
 	}

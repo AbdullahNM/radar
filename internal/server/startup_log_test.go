@@ -213,6 +213,16 @@ func TestStartupAIStatusExplainsWhyItIsOff(t *testing.T) {
 			want:    "disabled (no agent CLI found). Install Claude Code, Codex, Cursor, or OpenCode",
 		},
 		{
+			name:    "mcp read-only names the agent if found",
+			summary: startupLogSummary{mcpReadOnly: true, aiAgent: "claude"},
+			want:    "enabled via claude",
+		},
+		{
+			name:    "mcp read-only asks for an install if no CLI found",
+			summary: startupLogSummary{mcpReadOnly: true},
+			want:    "disabled (no agent CLI found). Install Claude Code, Codex, Cursor, or OpenCode",
+		},
+		{
 			name:    "--no-mcp names the flag",
 			summary: startupLogSummary{},
 			want:    "--no-mcp",
@@ -251,5 +261,19 @@ func TestStartupAIStatusExplainsWhyItIsOff(t *testing.T) {
 				t.Errorf("startupAIStatus = %q, want it to contain %q", got, c.want)
 			}
 		})
+	}
+}
+
+func TestFormatStartupLogSummaryMCPReadOnly(t *testing.T) {
+	lines := formatStartupLogSummary(startupLogSummary{
+		listenAddress: DefaultListenAddress,
+		port:          9280,
+		mcpReadOnly:   true,
+		contextName:   "kind-radar",
+	}, false)
+	got := strings.Join(lines, "\n")
+	want := "MCP:         enabled (read-only at /mcp-readonly)"
+	if !strings.Contains(got, want) {
+		t.Errorf("startup summary missing %q:\n%s", want, got)
 	}
 }

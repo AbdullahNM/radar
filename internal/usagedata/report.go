@@ -42,6 +42,7 @@ type Setup struct {
 	AuthMode        string   `json:"authMode"`
 	TimelineStorage string   `json:"timelineStorage"`
 	MCPEnabled      bool     `json:"mcpEnabled"`
+	MCPReadOnly     bool     `json:"mcpReadOnly,omitempty"`
 	Prometheus      string   `json:"prometheus"`
 	CostSource      string   `json:"costSource"`
 	Browsers        []string `json:"browsers"`

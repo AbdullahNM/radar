@@ -1,6 +1,9 @@
 package server
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/skyhook-io/radar/internal/k8s"
@@ -80,5 +83,68 @@ func TestMergeNamespaceCapabilitiesHelmWrite(t *testing.T) {
 	mergeNamespaceCapabilities(caps, &k8s.NamespaceCapabilities{})
 	if caps.HelmWrite {
 		t.Fatal("a clean namespace deny should override a global Helm write grant")
+	}
+}
+
+func TestHandleCapabilitiesMCPStatus(t *testing.T) {
+	dummyHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+
+	tests := []struct {
+		name            string
+		mcpHandler      http.Handler
+		readOnlyHandler http.Handler
+		wantMCPEnabled  bool
+		wantMCPReadOnly bool
+	}{
+		{
+			name:            "both handlers present (full mcp)",
+			mcpHandler:      dummyHandler,
+			readOnlyHandler: dummyHandler,
+			wantMCPEnabled:  true,
+			wantMCPReadOnly: false,
+		},
+		{
+			name:            "only readonly handler present (read-only mode)",
+			mcpHandler:      nil,
+			readOnlyHandler: dummyHandler,
+			wantMCPEnabled:  true,
+			wantMCPReadOnly: true,
+		},
+		{
+			name:            "both handlers nil (mcp disabled)",
+			mcpHandler:      nil,
+			readOnlyHandler: nil,
+			wantMCPEnabled:  false,
+			wantMCPReadOnly: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := &Server{
+				listenAddress:      DefaultListenAddress,
+				mcpHandler:         tt.mcpHandler,
+				mcpReadOnlyHandler: tt.readOnlyHandler,
+			}
+			req := httptest.NewRequest(http.MethodGet, "http://localhost:9280/api/capabilities", nil)
+			w := httptest.NewRecorder()
+			s.handleCapabilities(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
+			}
+			var response struct {
+				MCPEnabled  bool `json:"mcpEnabled"`
+				MCPReadOnly bool `json:"mcpReadOnly"`
+			}
+			if err := json.NewDecoder(w.Body).Decode(&response); err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			if response.MCPEnabled != tt.wantMCPEnabled {
+				t.Errorf("mcpEnabled = %v, want %v", response.MCPEnabled, tt.wantMCPEnabled)
+			}
+			if response.MCPReadOnly != tt.wantMCPReadOnly {
+				t.Errorf("mcpReadOnly = %v, want %v", response.MCPReadOnly, tt.wantMCPReadOnly)
+			}
+		})
 	}
 }
