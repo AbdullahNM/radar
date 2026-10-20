@@ -55,6 +55,9 @@ const (
 	releaseListMaxOperations = 3
 )
 
+// Repository credentials may also appear in URL paths, so hide the whole URL.
+var repositoryRefreshErrorURL = regexp.MustCompile(`[a-zA-Z][a-zA-Z0-9+.-]*://[^\s"<>]*`)
+
 // HTTP client for ArtifactHub requests
 var httpClient = &http.Client{
 	Timeout: 30 * time.Second,
@@ -3175,17 +3178,34 @@ func (c *Client) UpdateRepository(repoName string) error {
 	// Create chart repository and download index
 	chartRepo, err := repo.NewChartRepository(repoEntry, getter.All(c.settings))
 	if err != nil {
-		return fmt.Errorf("failed to create chart repository: %w", err)
+		return fmt.Errorf("failed to create chart repository %q: %s", repoName, repositoryRefreshErrorURL.ReplaceAllString(err.Error(), "<redacted>"))
 	}
 
-	chartRepo.CachePath = c.settings.RepositoryCache
-
-	_, err = chartRepo.DownloadIndexFile()
+	if err := os.MkdirAll(c.settings.RepositoryCache, 0o755); err != nil {
+		return fmt.Errorf("prepare repository cache: %w", err)
+	}
+	stageDir, err := os.MkdirTemp(c.settings.RepositoryCache, ".radar-repository-")
 	if err != nil {
-		return fmt.Errorf("failed to download index: %w", err)
+		return fmt.Errorf("stage repository index: %w", err)
+	}
+	defer os.RemoveAll(stageDir)
+	chartRepo.CachePath = stageDir
+
+	stagedIndex, err := chartRepo.DownloadIndexFile()
+	if err != nil {
+		return fmt.Errorf("failed to download index for repository %q: %s", repoName, repositoryRefreshErrorURL.ReplaceAllString(err.Error(), "<redacted>"))
 	}
 
-	return nil
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	current, err := repo.LoadFile(repoFile)
+	if err != nil {
+		return fmt.Errorf("reload repository configuration: %w", err)
+	}
+	if entry := current.Get(repoName); entry == nil || *entry != *repoEntry {
+		return fmt.Errorf("%w: repository %q changed while refreshing; retry the request", errRepositoryConflict, repoName)
+	}
+	return publishStagedRepositoryCache(stageDir, stagedIndex, c.settings.RepositoryCache)
 }
 
 // SearchCharts searches for charts across all repositories
