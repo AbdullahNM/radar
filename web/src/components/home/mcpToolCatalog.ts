@@ -383,4 +383,19 @@ export const MCP_TOOL_CATALOG: MCPToolInfo[] = [
       { arg: 'timeout', desc: 'shared eviction and deletion deadline in seconds (default 120 when waiting, 60 otherwise)' },
     ],
   },
+  {
+    name: 'wait_for',
+    desc: 'Wait after a fix for a rollout, readiness, completion, deletion, or a status condition. Each call waits at most 45s and returns met, waiting, blocked, or failed; call again within your own time limit.',
+    params: [
+      { arg: 'kind', required: true, desc: 'resource kind, including CRDs' },
+      { arg: 'name', desc: 'object name; or set label_selector or all' },
+      { arg: 'uid', desc: 'with name: pin to the uid returned by a previous call' },
+      { arg: 'label_selector', desc: "every current match; to wait for replacements, wait on their controller's rollout" },
+      { arg: 'all', desc: 'every object of the kind in the namespace' },
+      { arg: 'namespace', desc: 'namespace for namespaced kinds' },
+      { arg: 'group', desc: 'API group when the kind is ambiguous' },
+      { arg: 'condition', desc: 'rollout, complete, ready, deleted, Type[=Status], or jsonpath={.status.path}=value; defaults by kind' },
+      { arg: 'timeout_seconds', desc: '1-45 seconds (default 45); larger values wait 45' },
+    ],
+  },
 ]

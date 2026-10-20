@@ -551,6 +551,12 @@ func registerTools(server *mcp.Server, includeWrites bool, paramRegistry *toolPa
 		Annotations: readOnly,
 	}, logToolCall("get_workload_logs", handleGetWorkloadLogs))
 
+	addToolWithRegistry(paramRegistry, server, &mcp.Tool{
+		Name:        "wait_for",
+		Description: "Wait until a change takes effect, like kubectl rollout status and kubectl wait; use it after a fix instead of sleeping and re-reading. condition: rollout (default for Deployment, StatefulSet, DaemonSet, Argo Rollout), complete (default for Job), ready (default for Pod), deleted, a status condition type that must be True (Type=Status for another value), or jsonpath={.status.field}=value. Target one object by name, every match of label_selector, or all of the kind in the namespace. One call waits at most 45s and returns state: met; waiting (not yet: call again, passing back uid if one was returned, until your own time limit); blocked (stalled on the problem in blockers; it may clear, but usually needs a fix); failed (Job failed or Pod finished). Not a timer: to let time pass, run the check that needs it.",
+		Annotations: readOnly,
+	}, logToolCall("wait_for", handleWaitFor))
+
 	// --- Write tools (workload, cronjob, gitops, apply, patch, node) ---
 	// Registered only on the full server. The read-only mount omits them so a
 	// read-only investigation can't even discover a mutating tool — server-side
