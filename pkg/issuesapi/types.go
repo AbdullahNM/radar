@@ -6,6 +6,8 @@ package issuesapi
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/skyhook-io/radar/pkg/readreason"
 )
 
 type Severity string
@@ -327,17 +329,46 @@ type RecentChange struct {
 	RankReason     string         `json:"rank_reason,omitempty"`
 	// ApplicationConfigurationChange is a ranking hint for workload runtime
 	// configuration (including the image) or data changes on a directly
-	// consumed ConfigMap, not a causal claim.
+	// referenced ConfigMap, or an observed write with likely stale Secret env
+	// readers, not a causal claim.
 	ApplicationConfigurationChange bool `json:"application_configuration_change,omitempty"`
 	// NotLinkedToReturnedIssues is set only on top-level recent_changes in an
 	// eligible, unfiltered issues response with complete linkage evidence.
 	NotLinkedToReturnedIssues bool          `json:"not_linked_to_returned_issues,omitempty"`
 	Fields                    []ChangeField `json:"fields,omitempty"`
-	// ConsumedBy lists workloads that mount or reference this ConfigMap via
-	// their pod spec (volumes, envFrom, env valueFrom). Direct references
-	// only — runtime consumers reading through an intermediary service are
-	// not captured.
+	// ConsumedBy lists workloads or Pods whose specs reference this ConfigMap
+	// or Secret, capped at five. References do not establish runtime use.
+	// Only names the caller may read are listed; ConsumedByWithheld counts
+	// the rest.
 	ConsumedBy []string `json:"consumed_by,omitempty"`
+	// ConsumedByWithheld counts referencing workloads or Pods left out of
+	// ConsumedBy because the caller may not read them. Absent when none were.
+	ConsumedByWithheld *Withheld `json:"consumed_by_withheld,omitempty"`
+	// RunningPreviousValue reports observed writes with likely stale env readers.
+	// Absence means not established, rather than no stale readers.
+	RunningPreviousValue *RunningPreviousValue `json:"running_previous_value,omitempty"`
+	UpdatesInWindow      int                   `json:"updates_in_window,omitempty"`
+	FirstUpdateAt        string                `json:"first_update_at,omitempty"`
+}
+
+// RunningPreviousValue describes Pods that likely retain an earlier env value.
+// It is set only for callers who may read Pods in the namespace, so Pods
+// counts Pods the caller can read. Workloads lists the owners the caller may
+// read, capped at five; Withheld counts the owners left out for access.
+type RunningPreviousValue struct {
+	Workloads []string  `json:"workloads"`
+	Withheld  *Withheld `json:"withheld,omitempty"`
+	Pods      int       `json:"pods"`
+	Keys      []string  `json:"keys"`
+	Note      string    `json:"note"`
+}
+
+// Withheld counts names the caller's access kept out of a list, without
+// naming them, so a filtered list is not read as complete. Reason is always
+// readreason.UserForbidden: the caller's own RBAC denies reading them.
+type Withheld struct {
+	Count  int             `json:"count"`
+	Reason readreason.Code `json:"reason"`
 }
 
 // CreatedObjects is one run of plain creates in a namespace, listed compactly
