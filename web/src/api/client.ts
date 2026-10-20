@@ -5595,10 +5595,46 @@ export function useNodeRemovalPlan(name: string | undefined, enabled: boolean) {
   })
 }
 
-export function useDrainNode() {
+export type NodeDrainActivity = {
+  requestId: number;
+  startedAt: number;
+  timeoutSeconds: number;
+  contextName?: string;
+} & ({ status: "pending" } | {
+  status: "finished";
+  finishedAt: number;
+  summary: ReturnType<typeof describeDrainResult>;
+});
+
+export function nodeDrainActivityKey(apiBase: string, name: string, nodeUID: string) {
+  return ["node-drain-activity", apiBase, name, nodeUID] as const;
+}
+
+export function useNodeDrainActivity(name: string, nodeUID: string) {
   const queryClient = useQueryClient();
+  const queryKey = nodeDrainActivityKey(getApiBase(), nodeUID ? name : "", nodeUID);
+  const { data } = useQuery<NodeDrainActivity | null>({
+    queryKey,
+    queryFn: () => null,
+    initialData: null,
+    enabled: false,
+    staleTime: Infinity,
+    gcTime: Infinity,
+  });
+  return {
+    activity: nodeUID ? data : null,
+    dismiss: () => queryClient.setQueryData(queryKey, null),
+  };
+}
+
+let nextNodeDrainRequestId = 0;
+
+export function useDrainNode(nodeUID = "") {
+  const queryClient = useQueryClient();
+  const apiBase = getApiBase();
 
   return useMutation({
+    retry: false,
     mutationFn: async ({
       name,
       options,
@@ -5606,7 +5642,7 @@ export function useDrainNode() {
       name: string;
       options?: DrainNodeOptions;
     }) => {
-      const response = await apiFetch(`${getApiBase()}/nodes/${name}/drain`, {
+      const response = await apiFetch(apiUrl(`/nodes/${encodeURIComponent(name)}/drain`, apiBase), {
         method: "POST",
         headers: options ? { "Content-Type": "application/json" } : {},
         body: options ? JSON.stringify(options) : undefined,
@@ -5616,6 +5652,37 @@ export function useDrainNode() {
         throw new Error(error.error || `HTTP ${response.status}`);
       }
       return response.json();
+    },
+    onMutate: ({ name }) => {
+      const contextName = queryClient.getQueryData<ClusterInfo>(["cluster-info"])?.context
+        ?? queryClient.getQueryData<{ context: string }>(["connection-status"])?.context;
+      const activity: NodeDrainActivity = {
+        status: "pending",
+        requestId: ++nextNodeDrainRequestId,
+        startedAt: Date.now(),
+        timeoutSeconds: 120,
+        contextName,
+      };
+      const queryKey = nodeDrainActivityKey(apiBase, name, nodeUID);
+      if (nodeUID) queryClient.setQueryData(queryKey, activity);
+      return { queryKey, activity, tracked: Boolean(nodeUID), contextName };
+    },
+    onError: (error, _variables, context) => {
+      if (!context?.tracked) return;
+      queryClient.setQueryData<NodeDrainActivity | null>(context.queryKey, (previous) =>
+        previous?.requestId === context.activity.requestId ? {
+          ...context.activity,
+          status: "finished",
+          finishedAt: Date.now(),
+          summary: {
+            title: "Could not confirm drain completion",
+            detail: `${error.message}\nCheck the node's pods before retrying or taking it down. A failed request does not confirm whether evictions ran.`,
+            type: "warning",
+            failed: true,
+            outcome: "unconfirmed",
+          },
+        } : previous,
+      );
     },
     meta: {
       errorMessage: "Failed to drain node",
@@ -5633,14 +5700,28 @@ export function useDrainNode() {
         verificationError?: string;
       },
       variables,
+      context,
     ) => {
+      const currentContext = queryClient.getQueryData<ClusterInfo>(["cluster-info"])?.context;
+      if (context?.tracked && queryClient.getQueryData<NodeDrainActivity | null>(context.queryKey)?.requestId !== context.activity.requestId) return;
+      const { title, detail, type } = describeDrainResult(data);
+      if (context?.tracked) {
+        queryClient.setQueryData<NodeDrainActivity | null>(context.queryKey, (previous) =>
+          previous?.requestId === context.activity.requestId ? {
+            ...context.activity,
+            status: "finished",
+            finishedAt: Date.now(),
+            summary: describeDrainResult(data, { recorded: true }),
+          } : previous,
+        );
+      }
+      if (context && (context.queryKey[1] !== getApiBase() ||
+        (context.contextName && currentContext && context.contextName !== currentContext))) return;
       queryClient.invalidateQueries({ queryKey: ["resources", "nodes"] });
       queryClient.invalidateQueries({
         queryKey: ["resource", "nodes", "", variables.name],
       });
       queryClient.invalidateQueries({ queryKey: ["topology"] });
-
-      const { title, detail, type } = describeDrainResult(data);
       if (type === "error") {
         showApiError(title, detail);
       } else if (type === "success") {
@@ -5673,7 +5754,7 @@ interface DrainResultData {
   outcome?: DrainCompletionOutcome;
 }
 
-export function describeDrainResult(data: DrainResultData): {
+export function describeDrainResult(data: DrainResultData, { recorded = false }: { recorded?: boolean } = {}): {
   title: string;
   detail: string;
   failed: boolean;
@@ -5723,7 +5804,7 @@ export function describeDrainResult(data: DrainResultData): {
   if (expected.length > 0) {
     parts.push(`Left in place by design: ${pluralize(expected.length, "pod")}.`);
   }
-  parts.push("The node remains cordoned.");
+  parts.push(recorded ? "The node was left cordoned." : "The node remains cordoned.");
   if (outcome === "incomplete" || outcome === "unconfirmed") {
     if (blocking.length > 0) parts.push("Review the skipped workloads and drain options before retrying.");
     if (pending.length > 0) parts.push("Check the remaining pods before retrying.");
@@ -7197,7 +7278,7 @@ export function useSetActiveNamespace() {
       });
       if (scope.cacheScoped) {
         queryClient.removeQueries({
-          predicate: (query) => query.queryKey[0] !== "namespace-scope",
+          predicate: (query) => query.queryKey[0] !== "namespace-scope" && query.queryKey[0] !== "node-drain-activity",
         });
       }
       queryClient.setQueryData<NamespaceScope>(["namespace-scope"], scope);
