@@ -12,6 +12,7 @@ import { Tooltip } from '../ui/Tooltip'
 import { apiUrl, getAuthHeaders, getCredentialsMode } from '../../api/config'
 import { readErrorBody } from '../../api/httpErrors'
 import { Input } from '@skyhook-io/k8s-ui'
+import { useIsAuthEnabled } from '../../contexts/CapabilitiesContext'
 
 const radarLoadingIconUrl = assetUrl(radarLoadingIcon)
 
@@ -203,6 +204,7 @@ export function ImageFilesystemModal({
             <AuthenticationHelp
               image={image}
               registryType={registryType}
+              hasPod={!!podName}
               onRetry={() => refetchMetadata()}
             />
           )}
@@ -293,8 +295,9 @@ interface DownloadConfirmationProps {
 }
 
 function DownloadConfirmation({ metadata, onConfirm, onCancel }: DownloadConfirmationProps) {
+  const authEnabled = useIsAuthEnabled()
   const isPublic = metadata.authMethod === 'anonymous'
-  const authCommand = !isPublic ? getAuthCommand(metadata.authMethod, metadata.image) : null
+  const authCommand = !authEnabled && !isPublic ? getAuthCommand(metadata.authMethod, metadata.image) : null
   const [copied, setCopied] = useState(false)
 
   const handleCopy = async () => {
@@ -413,15 +416,17 @@ function DownloadConfirmation({ metadata, onConfirm, onCancel }: DownloadConfirm
 interface AuthenticationHelpProps {
   image: string
   registryType?: string
+  hasPod: boolean
   onRetry: () => void
 }
 
-function AuthenticationHelp({ image, registryType, onRetry }: AuthenticationHelpProps) {
+function AuthenticationHelp({ image, registryType, hasPod, onRetry }: AuthenticationHelpProps) {
+  const authEnabled = useIsAuthEnabled()
   const [copied, setCopied] = useState(false)
   const [retrying, setRetrying] = useState(false)
   const registry = getRegistryHost(image)
   const authMethod = registryType || 'generic'
-  const authCommand = getAuthCommand(authMethod, image)
+  const authCommand = authEnabled ? null : getAuthCommand(authMethod, image)
 
   const handleCopy = async () => {
     if (!authCommand) return
@@ -489,8 +494,16 @@ function AuthenticationHelp({ image, registryType, onRetry }: AuthenticationHelp
 
       {/* Explanation */}
       <p className="text-xs text-theme-text-tertiary text-center max-w-md mb-6">
-        Radar uses your local Docker credentials (<span className="font-mono">~/.docker/config.json</span>).
-        Run the command above in your terminal, then click Retry.
+        {authEnabled ? (
+          hasPod ? (
+            <>Private images need exec access to the Pod, or read access to its imagePullSecrets. Exec access also lets Radar use its own registry credentials.</>
+          ) : (
+            <>This view reads images anonymously. Open the image from its Pod to use the Pod's pull secrets.</>
+          )
+        ) : (
+          <>Radar uses your local Docker credentials (<span className="font-mono">~/.docker/config.json</span>).
+          Run the command above in your terminal, then click Retry.</>
+        )}
       </p>
 
       {/* Retry button */}
