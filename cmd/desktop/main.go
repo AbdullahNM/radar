@@ -8,7 +8,6 @@ import (
 	"os"
 	goruntime "runtime"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/skyhook-io/radar/internal/app"
