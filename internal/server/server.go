@@ -88,6 +88,7 @@ type Server struct {
 	startupLog              bool
 	remoteAccessHint        bool
 	devMode                 bool
+	enablePprof             bool
 	trustedOrigins          map[string]struct{} // normalized; see browserOriginAllowed
 	staticFS                fs.FS
 	startTime               time.Time
@@ -205,6 +206,7 @@ type Config struct {
 	StartupLog              bool                        // Emit the operator-facing startup block after a successful bind
 	RemoteAccessHint        bool                        // Explain the explicit shared-listener opt-in (native CLI only)
 	DevMode                 bool                        // Serve frontend from filesystem instead of embedded
+	EnablePprof             bool                        // Mount pprof profiling handlers at /debug/pprof (opt-in; devMode also enables)
 	TrustedOrigins          []string                    // Extra origins allowed to make changes, from ParseTrustedOrigins
 	StaticFS                embed.FS                    // Embedded frontend files
 	StaticRoot              string                      // Path within StaticFS
@@ -248,6 +250,7 @@ func New(cfg Config) *Server {
 		startupLog:              cfg.StartupLog,
 		remoteAccessHint:        cfg.RemoteAccessHint,
 		devMode:                 cfg.DevMode,
+		enablePprof:             cfg.EnablePprof,
 		startTime:               time.Now(),
 		mcpHandler:              cfg.MCPHandler,
 		mcpReadOnlyHandler:      cfg.MCPReadOnlyHandler,
@@ -483,9 +486,10 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 
 	// pprof routes for profiling. Not mounted under cloud-mode — they'd be
 	// reachable via the Cloud tunnel and leak the in-memory K8s cache (every
-	// Secret, ConfigMap, Pod spec) via /debug/pprof/heap. Local/standalone
-	// installs keep them for debugging.
-	if !cloudMode() {
+	// Secret, ConfigMap, Pod spec) via /debug/pprof/heap. In local/standalone
+	// installs, mounted only when explicitly enabled (--pprof) or in dev mode
+	// (--dev) to avoid exposing heap dumps and profiling overhead by default.
+	if !cloudMode() && (s.enablePprof || s.devMode) {
 		r.Route("/debug/pprof", func(r chi.Router) {
 			r.Get("/", pprof.Index)
 			r.Get("/cmdline", pprof.Cmdline)

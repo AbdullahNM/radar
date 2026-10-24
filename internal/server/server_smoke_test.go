@@ -1843,6 +1843,69 @@ func TestSmokeCloudMode_PprofNotMounted(t *testing.T) {
 	}
 }
 
+// TestSmokePprofGating verifies that /debug/pprof/* is gated by default,
+// enabled via EnablePprof or DevMode, and stays disabled under cloud-mode.
+func TestSmokePprofGating(t *testing.T) {
+	t.Run("default disabled", func(t *testing.T) {
+		srv := New(Config{DevMode: false, EnablePprof: false})
+		defer srv.Stop()
+
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil))
+
+		if rec.Code == http.StatusOK {
+			body := rec.Body.String()
+			if strings.Contains(body, "Types of profiles available") {
+				t.Fatalf("pprof index served when pprof is disabled")
+			}
+		}
+	})
+
+	t.Run("explicitly enabled", func(t *testing.T) {
+		srv := New(Config{DevMode: false, EnablePprof: true})
+		defer srv.Stop()
+
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		body := rec.Body.String()
+		if !strings.Contains(body, "Types of profiles available") && !strings.Contains(body, "profiles:") {
+			t.Fatalf("expected pprof index content, got: %s", body)
+		}
+	})
+
+	t.Run("dev mode enables pprof", func(t *testing.T) {
+		srv := New(Config{DevMode: true, EnablePprof: false})
+		defer srv.Stop()
+
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+	})
+
+	t.Run("cloud mode overrides enable flag", func(t *testing.T) {
+		t.Setenv("RADAR_CLOUD_MODE", "true")
+		srv := New(Config{DevMode: true, EnablePprof: true})
+		defer srv.Stop()
+
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil))
+
+		if rec.Code == http.StatusOK {
+			body := rec.Body.String()
+			if strings.Contains(body, "Types of profiles available") {
+				t.Fatalf("pprof index served under cloud mode")
+			}
+		}
+	})
+}
+
 func TestSmokeGetConfig(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 

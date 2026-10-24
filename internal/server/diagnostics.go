@@ -35,6 +35,7 @@ type DiagConfig struct {
 	DebugEvents          bool   `json:"debugEvents"`
 	MCPReadOnly          bool   `json:"mcpReadOnly"`
 	MCPEnabled           bool   `json:"mcpEnabled"`
+	Pprof                bool   `json:"pprof"`
 	OpenCostCurrency     string `json:"opencostCurrency"`
 	HasPrometheusURL     bool   `json:"hasPrometheusURL"`
 	HasPrometheusHeaders bool   `json:"hasPrometheusHeaders"`
