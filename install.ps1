@@ -77,7 +77,6 @@ try {
     exit 1
 }
 
-# Verify checksum
 Write-Host "Verifying SHA-256 checksum..." -ForegroundColor Cyan
 $ChecksumContent = Get-Content -Path $ChecksumsPath -Raw
 $ExpectedHash = $null

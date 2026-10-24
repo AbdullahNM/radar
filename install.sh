@@ -85,7 +85,8 @@ fi
 DOWNLOAD_URL="https://github.com/${REPO}/releases/download/v${VERSION}/${FILENAME}"
 CHECKSUMS_URL="https://github.com/${REPO}/releases/download/v${VERSION}/checksums.txt"
 TMP_DIR=$(mktemp -d)
-trap 'rm -rf "$TMP_DIR"' EXIT INT TERM
+trap 'rm -rf "$TMP_DIR"' 0
+trap 'exit 1' INT TERM
 
 echo "Downloading ${DOWNLOAD_URL}..."
 curl -fsSL "$DOWNLOAD_URL" -o "${TMP_DIR}/${FILENAME}"
@@ -93,7 +94,6 @@ curl -fsSL "$DOWNLOAD_URL" -o "${TMP_DIR}/${FILENAME}"
 echo "Downloading ${CHECKSUMS_URL}..."
 curl -fsSL "$CHECKSUMS_URL" -o "${TMP_DIR}/checksums.txt"
 
-# Verify checksum
 echo "Verifying SHA-256 checksum..."
 EXPECTED_SHA=$(awk -v f="$FILENAME" '{ sub(/\r$/, "", $2); if ($2 == f || $2 == "*"f) { print $1; exit } }' "${TMP_DIR}/checksums.txt")
 if [ -z "$EXPECTED_SHA" ]; then
