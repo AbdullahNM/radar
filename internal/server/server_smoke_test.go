@@ -1843,8 +1843,6 @@ func TestSmokeCloudMode_PprofNotMounted(t *testing.T) {
 	}
 }
 
-// TestSmokePprofGating verifies that /debug/pprof/* is gated by default,
-// enabled via EnablePprof or DevMode, and stays disabled under cloud-mode.
 func TestSmokePprofGating(t *testing.T) {
 	t.Run("default disabled", func(t *testing.T) {
 		srv := New(Config{DevMode: false, EnablePprof: false})
@@ -1902,6 +1900,24 @@ func TestSmokePprofGating(t *testing.T) {
 			if strings.Contains(body, "Types of profiles available") {
 				t.Fatalf("pprof index served under cloud mode")
 			}
+		}
+	})
+
+	t.Run("diagnostics reflects effective state", func(t *testing.T) {
+		srv := New(Config{DevMode: true, EnablePprof: false, DiagConfig: &DiagConfig{}})
+		defer srv.Stop()
+
+		rec := httptest.NewRecorder()
+		srv.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/diagnostics", nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("expected 200, got %d", rec.Code)
+		}
+		var snap DiagnosticsSnapshot
+		if err := json.Unmarshal(rec.Body.Bytes(), &snap); err != nil {
+			t.Fatalf("unmarshal diagnostics: %v", err)
+		}
+		if snap.Config == nil || !snap.Config.Pprof {
+			t.Fatalf("expected snap.Config.Pprof to be true in dev mode, got: %+v", snap.Config)
 		}
 	})
 }

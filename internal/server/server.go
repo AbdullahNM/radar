@@ -489,7 +489,8 @@ func (s *Server) setupAppRoutes(r chi.Router) {
 	// Secret, ConfigMap, Pod spec) via /debug/pprof/heap. In local/standalone
 	// installs, mounted only when explicitly enabled (--pprof) or in dev mode
 	// (--dev) to avoid exposing heap dumps and profiling overhead by default.
-	if !cloudMode() && (s.enablePprof || s.devMode) {
+	if s.pprofEnabled() {
+		log.Printf("[server] pprof endpoints enabled at /debug/pprof/")
 		r.Route("/debug/pprof", func(r chi.Router) {
 			r.Get("/", pprof.Index)
 			r.Get("/cmdline", pprof.Cmdline)
@@ -6380,3 +6381,9 @@ func (s *Server) handleDebugInformers(w http.ResponseWriter, r *http.Request) {
 		"watchedResources": resources,
 	})
 }
+
+// pprofEnabled reports whether /debug/pprof routes are active.
+func (s *Server) pprofEnabled() bool {
+	return !cloudMode() && (s.enablePprof || s.devMode)
+}
+

@@ -526,7 +526,7 @@ func CreateServer(cfg AppConfig) *server.Server {
 		DiagConfig: &server.DiagConfig{
 			Port:                 cfg.Port,
 			DevMode:              cfg.DevMode,
-			Pprof:                cfg.EnablePprof,
+			Pprof:                cfg.EnablePprof || cfg.DevMode,
 			Namespace:            cfg.Namespace,
 			TimelineStorage:      cfg.TimelineStorage,
 			HistoryLimit:         cfg.HistoryLimit,
