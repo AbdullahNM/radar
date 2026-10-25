@@ -7,6 +7,8 @@ package ownership
 import (
 	"errors"
 
+	"k8s.io/apimachinery/pkg/types"
+
 	"github.com/skyhook-io/radar/pkg/resourceid"
 )
 
@@ -32,6 +34,14 @@ type ReadSession interface {
 	Catalog() *Catalog
 	// Object reads one object. It does no I/O and waits for nothing.
 	Object(ref resourceid.Ref) ObjectRead
+	// DependentCandidates finds the objects of the catalog's dependent kinds in
+	// scope whose owner references name uid. It does no I/O and waits for
+	// nothing. Which versions of a kind are watched, and, for an
+	// all-namespaces search, the namespaces each is watched in one by one,
+	// are fixed at the session's first look, so those searches agree on what
+	// they could read. A search of named namespaces reads each one's watch as
+	// it is now, and the objects are always read as they are now.
+	DependentCandidates(uid types.UID, scope SearchScope) DependentCandidatesRead
 	// ValidateCaches returns ErrCachesReplaced if the caches the session read
 	// were replaced since it began, as when Radar switches clusters
 	// or rebuilds its cache, and nil otherwise. An answer built in a session
