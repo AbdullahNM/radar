@@ -77,3 +77,9 @@ func TestManualUpdateCheckDoesNotDispatchAfterCancellation(t *testing.T) {
 		t.Fatal("dispatched an event after shutdown")
 	}
 }
+
+func TestManualUpdateCheckBeforeStartupIsIgnored(t *testing.T) {
+	a := NewDesktopApp(nil, timeline.StoreConfig{})
+	a.execJS = func(string) { t.Fatal("dispatched before startup") }
+	a.checkForUpdates()
+}

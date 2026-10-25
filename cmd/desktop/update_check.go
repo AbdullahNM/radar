@@ -5,7 +5,7 @@ import (
 )
 
 func (a *DesktopApp) checkForUpdates() {
-	if a.ctx.Err() != nil {
+	if a.ctx == nil || a.ctx.Err() != nil {
 		return
 	}
 	if !a.updateCheckMu.TryLock() {

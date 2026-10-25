@@ -771,3 +771,55 @@ func TestManualUpdateCheckPreservesAutomaticOptOut(t *testing.T) {
 		})
 	}
 }
+
+func TestManualUpdateCheckSupersedesInFlightAutomaticLookup(t *testing.T) {
+	for _, source := range []string{"", "release-only"} {
+		t.Run(source, func(t *testing.T) {
+			t.Setenv("RADAR_DISABLE_VERSION_CHECK", "")
+			started, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			var requests atomic.Int32
+			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				tag := "v1.4.0"
+				if requests.Add(1) == 1 {
+					close(started)
+					<-release
+					tag = "v1.3.0"
+				}
+				_ = json.NewEncoder(w).Encode(githubRelease{TagName: tag})
+			}))
+			t.Cleanup(proxy.Close)
+			t.Cleanup(func() { once.Do(func() { close(release) }) })
+			previousURL, previousVersion := releasesURL, Current
+			releasesURL = proxy.URL
+			SetCurrent("1.2.0")
+			resetUpdateCache()
+			t.Cleanup(func() {
+				releasesURL = previousURL
+				SetCurrent(previousVersion)
+				resetUpdateCache()
+			})
+
+			automatic := make(chan *UpdateInfo, 1)
+			go func() { automatic <- checkForUpdateCached(checkOptions{source: source}) }()
+			<-started
+			manual := CheckForUpdateManual(context.Background())
+			once.Do(func() { close(release) })
+			background := <-automatic
+			if manual.LatestVersion != "1.4.0" || manual.Error != "" {
+				t.Fatalf("manual result: %+v", manual)
+			}
+			if background.LatestVersion != "1.4.0" {
+				t.Fatalf("in-flight lookup replaced manual result: %+v", background)
+			}
+			for _, info := range []*UpdateInfo{CheckForUpdate(context.Background()), CheckForUpdateRelease(context.Background())} {
+				if info.LatestVersion != "1.4.0" || info.Error != "" {
+					t.Fatalf("cached lookup lost manual result: %+v", info)
+				}
+			}
+			if got := requests.Load(); got != 2 {
+				t.Fatalf("requests = %d, want one automatic and one manual", got)
+			}
+		})
+	}
+}

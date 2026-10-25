@@ -193,6 +193,9 @@ func CheckForUpdateManual(ctx context.Context) *UpdateInfo {
 		mu.Lock()
 		copy := *result
 		lastManualResult = &copy
+		for _, source := range []string{"", "release-only"} {
+			updateCache[source] = updateCacheEntry{result: &copy, checkedAt: time.Now()}
+		}
 		mu.Unlock()
 	}
 	return result
@@ -269,7 +272,13 @@ func checkForUpdateCached(options checkOptions) *UpdateInfo {
 		cancel()
 
 		mu.Lock()
-		updateCache[options.source] = updateCacheEntry{result: result, checkedAt: time.Now()}
+		// A completed manual lookup supersedes an automatic request still in flight.
+		if latest := updateCache[options.source]; latest.loading == loading {
+			updateCache[options.source] = updateCacheEntry{result: result, checkedAt: time.Now()}
+		} else {
+			copy := *latest.result
+			result = &copy
+		}
 		close(loading)
 		mu.Unlock()
 

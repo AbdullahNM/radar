@@ -63,7 +63,6 @@ export function UpdateNotification({ placement = 'floating' }: { placement?: 'fl
   useEffect(() => {
     if (inSettings) return
     const handler = () => {
-      void queryClient.cancelQueries({ queryKey: ['version-check', getApiBase()], exact: true })
       showApiNotice('Checking for updates…', undefined, 'info')
     }
     const resultHandler = (event: Event) => {

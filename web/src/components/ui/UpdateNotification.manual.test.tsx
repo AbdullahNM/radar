@@ -94,4 +94,20 @@ describe('manual Desktop version checks', () => {
     await pending
     expect(client.getQueryData(['version-check', '/desktop/api'])).toEqual(info)
   })
+
+  it('lets the initial automatic fetch finish when a manual check fails', async () => {
+    client.removeQueries({ queryKey: ['version-check', '/desktop/api'], exact: true })
+    let resolveAutomatic!: (value: VersionInfo) => void
+    const pending = client.fetchQuery({
+      queryKey: ['version-check', '/desktop/api'],
+      queryFn: () => new Promise<VersionInfo>(resolve => { resolveAutomatic = resolve }),
+    })
+    act(() => {
+      window.dispatchEvent(new Event('radar:check-for-updates'))
+      window.dispatchEvent(new CustomEvent('radar:update-check-result', { detail: { ...current, error: 'offline' } }))
+    })
+    resolveAutomatic(current)
+    await pending
+    expect(client.getQueryData(['version-check', '/desktop/api'])).toEqual(current)
+  })
 })
