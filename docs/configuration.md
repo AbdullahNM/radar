@@ -893,8 +893,8 @@ Disable version checks with `--no-version-check`,
 `RADAR_DISABLE_VERSION_CHECK=1` (or `true`), or `"noVersionCheck": true` in
 `~/.radar/config.json`. The config setting works for both CLI and Desktop,
 including Desktop launched from Finder or the Dock. These controls stop both
-the release lookup and the in-cluster browser relay. While disabled, Desktop's
-Help > Check for Updates also skips the lookup. `DO_NOT_TRACK` does not
+the release lookup and the in-cluster browser relay. Desktop hides Help > Check
+for Updates while checks are disabled. `DO_NOT_TRACK` does not
 change version checks; [usage stats](usage-stats.md) are controlled separately.
 
 For Helm deployments, use the chart's existing environment-variable support:

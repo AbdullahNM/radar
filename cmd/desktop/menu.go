@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 
+	versionpkg "github.com/skyhook-io/radar/internal/version"
 	"github.com/wailsapp/wails/v2/pkg/menu"
 	"github.com/wailsapp/wails/v2/pkg/menu/keys"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -203,10 +204,12 @@ func createMenu(desktopApp *DesktopApp, version, goos string) *menu.Menu {
 
 	// Help menu
 	helpMenu := appMenu.AddSubmenu("Help")
-	helpMenu.AddText("Check for Updates...", nil, func(_ *menu.CallbackData) {
-		runtime.WindowExecJS(desktopApp.ctx, `window.dispatchEvent(new Event('radar:check-for-updates'))`)
-	})
-	helpMenu.AddSeparator()
+	if !versionpkg.IsDisabled() {
+		helpMenu.AddText("Check for Updates...", nil, func(_ *menu.CallbackData) {
+			runtime.WindowExecJS(desktopApp.ctx, `window.dispatchEvent(new Event('radar:check-for-updates'))`)
+		})
+		helpMenu.AddSeparator()
+	}
 	// The macOS application menu already carries About, drawn from mac.AboutInfo.
 	if !mac {
 		helpMenu.AddText("About Radar", nil, func(_ *menu.CallbackData) {
