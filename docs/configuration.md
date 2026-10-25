@@ -882,11 +882,28 @@ request, all to Skyhook, none containing your resources, logs or events:
 - **Update check** — to `releases.skyhook.io`, with the Radar version, OS/arch,
   install method, whether it is running locally or in-cluster, and the
   installation timestamp when Radar can determine it. Radar caches the release
-  result for one hour. Development builds are excluded.
+  result for one hour. Development builds skip the browser relay and use
+  release-only lookups when fetching release metadata.
 - **[Anonymous usage stats](usage-stats.md)**: once a day, strictly opt-in.
 - **Cloud dialog copy** — only when you *open* the Cloud dialog, to fetch the
   current terms shown in it. No identifiers are sent. `RADAR_CLOUD_FUNNEL=off`
   stops this request from ever happening.
+
+Disable version checks with `--no-version-check`,
+`RADAR_DISABLE_VERSION_CHECK=1` (or `true`), or `"noVersionCheck": true` in
+`~/.radar/config.json`. The config setting works for both CLI and Desktop,
+including Desktop launched from Finder or the Dock. These controls stop both
+the release lookup and the in-cluster browser relay. While disabled, Desktop's
+Help > Check for Updates also skips the lookup. `DO_NOT_TRACK` does not
+change version checks; [usage stats](usage-stats.md) are controlled separately.
+
+For Helm deployments, use the chart's existing environment-variable support:
+
+```yaml
+env:
+  - name: RADAR_DISABLE_VERSION_CHECK
+    value: "1"
+```
 
 A standalone Radar sends your cluster's data nowhere: it talks to your
 Kubernetes API directly and keeps everything it reads on your machine.

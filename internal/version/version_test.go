@@ -614,9 +614,23 @@ func TestCheckForUpdateDisabledByFlag(t *testing.T) {
 	}
 }
 
-func TestCheckForUpdateDisabledByEnvVars(t *testing.T) {
-	for _, envVar := range []string{"RADAR_DISABLE_VERSION_CHECK", "RADAR_NO_VERSION_CHECK", "DO_NOT_TRACK"} {
-		t.Run(envVar, func(t *testing.T) {
+func TestCheckForUpdateEnvironment(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		envVar   string
+		value    string
+		disabled bool
+	}{
+		{"explicit opt-out", "RADAR_DISABLE_VERSION_CHECK", "1", true},
+		{"true opt-out", "RADAR_DISABLE_VERSION_CHECK", "true", true},
+		{"case-insensitive opt-out", "RADAR_DISABLE_VERSION_CHECK", "TRUE", true},
+		{"zero leaves checks enabled", "RADAR_DISABLE_VERSION_CHECK", "0", false},
+		{"false leaves checks enabled", "RADAR_DISABLE_VERSION_CHECK", "false", false},
+		{"unset leaves checks enabled", "RADAR_DISABLE_VERSION_CHECK", "", false},
+		{"DNT leaves checks enabled", "DO_NOT_TRACK", "1", false},
+		{"unused alias leaves checks enabled", "RADAR_NO_VERSION_CHECK", "1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			var requestCount int
 			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requestCount++
@@ -634,17 +648,30 @@ func TestCheckForUpdateDisabledByEnvVars(t *testing.T) {
 				resetUpdateCache()
 			})
 
-			t.Setenv(envVar, "1")
-			if !IsDisabled() {
-				t.Fatalf("expected IsDisabled() to be true for %s=1", envVar)
+			t.Setenv("RADAR_DISABLE_VERSION_CHECK", "")
+			t.Setenv(tc.envVar, tc.value)
+			if got := IsDisabled(); got != tc.disabled {
+				t.Fatalf("IsDisabled() = %v for %s=%q, want %v", got, tc.envVar, tc.value, tc.disabled)
 			}
 
 			info := CheckForUpdate(context.Background())
-			if info == nil || info.UpdateAvail || info.LatestVersion != "" {
-				t.Errorf("expected clean UpdateInfo when disabled via %s", envVar)
+			if info == nil {
+				t.Fatal("expected non-nil UpdateInfo")
 			}
-			if requestCount != 0 {
-				t.Errorf("made %d requests when disabled via %s, want 0", requestCount, envVar)
+			if tc.disabled {
+				if info.UpdateAvail || info.LatestVersion != "" {
+					t.Errorf("expected no release lookup when disabled, got %+v", info)
+				}
+				if requestCount != 0 {
+					t.Errorf("made %d requests when disabled, want 0", requestCount)
+				}
+			} else {
+				if !info.UpdateAvail || info.LatestVersion != "1.3.0" {
+					t.Errorf("expected available update from release lookup, got %+v", info)
+				}
+				if requestCount != 1 {
+					t.Errorf("made %d requests when enabled, want 1", requestCount)
+				}
 			}
 		})
 	}

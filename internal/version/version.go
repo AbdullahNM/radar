@@ -126,7 +126,7 @@ func SetDisabled(disabled bool) {
 }
 
 // IsDisabled reports whether automatic version checks are disabled via CLI flag
-// or environment variables (RADAR_DISABLE_VERSION_CHECK, RADAR_NO_VERSION_CHECK, DO_NOT_TRACK).
+// or RADAR_DISABLE_VERSION_CHECK.
 func IsDisabled() bool {
 	mu.Lock()
 	flagDisabled := disabledByFlag
@@ -135,12 +135,6 @@ func IsDisabled() bool {
 		return true
 	}
 	if v := os.Getenv("RADAR_DISABLE_VERSION_CHECK"); v == "1" || strings.EqualFold(v, "true") {
-		return true
-	}
-	if v := os.Getenv("RADAR_NO_VERSION_CHECK"); v == "1" || strings.EqualFold(v, "true") {
-		return true
-	}
-	if v := os.Getenv("DO_NOT_TRACK"); v == "1" || strings.EqualFold(v, "true") {
 		return true
 	}
 	return false
