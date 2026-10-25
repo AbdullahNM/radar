@@ -113,7 +113,7 @@ func main() {
 	noBrowser := flag.Bool("no-browser", fileCfg.NoBrowser, "Don't auto-open browser")
 	browser := flag.String("browser", fileCfg.Browser, "Browser to use when opening the UI (default: OS default browser; macOS app names supported)")
 	devMode := flag.Bool("dev", false, "Development mode (serve frontend from filesystem)")
-	enablePprof := flag.Bool("pprof", os.Getenv("RADAR_PPROF") == "true" || os.Getenv("RADAR_PPROF") == "1", "Enable pprof profiling endpoints at /debug/pprof (Env: RADAR_PPROF)")
+	pprofFlags := config.RegisterPprofFlags(flag.CommandLine)
 	showVersion := flag.Bool("version", false, "Show version and exit")
 	historyLimit := flag.Int("history-limit", fileCfg.HistoryLimitOr(10000), "Maximum number of events to retain in timeline")
 	debugEvents := flag.Bool("debug-events", false, "Enable verbose event debugging (logs all event drops)")
@@ -340,6 +340,10 @@ func main() {
 			prometheusURLFlagSet = true
 		}
 	})
+	enablePprof, err := pprofFlags.Resolve()
+	if err != nil {
+		log.Fatal(err)
+	}
 	mcpMode, err := mcpFlags.Resolve()
 	if err != nil {
 		log.Fatal(err)
@@ -401,7 +405,7 @@ func main() {
 		NoBrowser:                   *noBrowser,
 		Browser:                     *browser,
 		DevMode:                     *devMode,
-		EnablePprof:                 *enablePprof,
+		EnablePprof:                 enablePprof,
 		HistoryLimit:                *historyLimit,
 		DebugEvents:                 *debugEvents,
 		FakeInCluster:               *fakeInCluster,

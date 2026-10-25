@@ -66,6 +66,29 @@ listener must be reachable through a published container port or Kubernetes
 Service. Desktop Radar and temporary `radar diagnose` servers remain
 loopback-only.
 
+## Profiling
+
+Radar keeps `/debug/pprof/*` available by default on loopback-only listeners
+and when Radar authentication is enabled, so memory, goroutine, and CPU profiles
+can be collected from a troubled process without restarting it. Authenticated
+installations require sign-in to access these process-wide diagnostics and
+refuse `/debug/pprof/cmdline`, because command-line arguments can contain
+credentials shared users must not see.
+
+Profiling defaults off on unauthenticated shared listeners, including the
+default Docker and non-authenticated Helm deployments. This applies in `--dev`
+mode too. Use `--pprof=true` to enable it explicitly or `--pprof=false` to
+disable it on any standalone installation. Both CLI and Desktop also accept
+`RADAR_PPROF=true` / `false` (or `1` / `0`); an explicit CLI flag wins over the
+environment. An unset or empty environment value preserves the automatic default.
+
+Cloud mode continues to omit these routes even with an explicit opt-in.
+Profiling exposes process information, including command-line arguments and
+goroutine stacks, and active collection has overhead. Heap profiles describe
+allocation sites and sizes; they are not raw dumps of cached resource contents.
+The diagnostics overlay and generated bug reports use `/api/diagnostics`,
+which remains available independently of profiling.
+
 ## Desktop Window Behavior
 
 On macOS, closing the Radar window hides the app rather than quitting it. The
