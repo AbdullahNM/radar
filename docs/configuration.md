@@ -77,10 +77,11 @@ credentials shared users must not see.
 
 Profiling defaults off on unauthenticated shared listeners, including the
 default Docker and non-authenticated Helm deployments. This applies in `--dev`
-mode too. Use `--pprof=true` to enable it explicitly or `--pprof=false` to
-disable it on any standalone installation. Both CLI and Desktop also accept
-`RADAR_PPROF=true` / `false` (or `1` / `0`); an explicit CLI flag wins over the
-environment. An unset or empty environment value preserves the automatic default.
+mode too. Both CLI and Desktop accept `RADAR_PPROF=true` / `false` (or `1` / `0`)
+to override the default for troubleshooting. An unset or empty environment value
+preserves the automatic default. The automatic policy covers normal use; the
+environment override keeps occasional profiling adjustments out of the CLI flag
+surface.
 
 Cloud mode continues to omit these routes even with an explicit opt-in.
 Profiling exposes process information, including command-line arguments and

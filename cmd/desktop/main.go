@@ -73,7 +73,6 @@ func main() {
 	timelineMaxSize := flag.String("timeline-max-size", fileCfg.TimelineMaxSizeOr("1Gi"), "Maximum SQLite timeline storage size before pruning oldest events (e.g. 800Mi, 8Gi). 0 disables size-based pruning.")
 	prometheusURL := flag.String("prometheus-url", fileCfg.PrometheusURL, "Manual Prometheus/VictoriaMetrics URL (skips auto-discovery)")
 	openCostCurrency := flag.String("opencost-currency", fileCfg.OpenCostCurrency, "Override the ISO 4217 currency label for OpenCost values (empty: auto-detect, then USD)")
-	pprofFlags := config.RegisterPprofFlags(flag.CommandLine)
 	mcpFlags := config.RegisterMCPFlags(flag.CommandLine, fileCfg)
 	flag.Parse()
 
@@ -147,7 +146,7 @@ func main() {
 		log.Printf("ERROR: invalid --opencost-currency %q: %v", *openCostCurrency, err)
 		os.Exit(1)
 	}
-	enablePprof, err := pprofFlags.Resolve()
+	enablePprof, err := config.PprofOverrideFromEnv()
 	if err != nil {
 		log.Fatal(err)
 	}
