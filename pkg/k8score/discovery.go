@@ -45,6 +45,10 @@ type ResourceDiscovery struct {
 	cacheTTL    time.Duration
 	refreshMu   sync.Mutex
 	mu          sync.RWMutex
+
+	// complete records that the discovery request that set resources returned
+	// no error; see DiscoveryCatalog.
+	complete bool
 }
 
 // DiscoveryOption is a functional option for NewResourceDiscovery.
@@ -262,6 +266,7 @@ func (d *ResourceDiscovery) refresh() error {
 	d.lastRefresh = time.Now()
 	d.partial = partial
 	d.failedGroup = failedGroups
+	d.complete = err == nil
 	log.Printf("Discovered %d API resources (%d unique kinds)", len(d.resources), len(d.resourceMap)/2)
 
 	return nil
