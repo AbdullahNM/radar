@@ -31,11 +31,12 @@ var (
 	// Controls install method detection and enables in-app update flow.
 	isDesktop bool
 
-	mu             sync.Mutex
-	updateCache    = map[string]updateCacheEntry{}
-	cacheTTL       = 1 * time.Hour
-	errorTTL       = 5 * time.Minute
-	disabledByFlag bool
+	mu               sync.Mutex
+	updateCache      = map[string]updateCacheEntry{}
+	cacheTTL         = 1 * time.Hour
+	errorTTL         = 5 * time.Minute
+	disabledByFlag   bool
+	lastManualResult *UpdateInfo
 )
 
 type updateCacheEntry struct {
@@ -58,6 +59,7 @@ const (
 // UpdateInfo contains version update information
 type UpdateInfo struct {
 	CurrentVersion string        `json:"currentVersion"`
+	BuildChannel   string        `json:"buildChannel"`
 	LatestVersion  string        `json:"latestVersion,omitempty"`
 	UpdateAvail    bool          `json:"updateAvailable"`
 	ReleaseURL     string        `json:"releaseUrl,omitempty"`
@@ -76,6 +78,7 @@ type githubRelease struct {
 
 type checkOptions struct {
 	source string
+	manual bool
 }
 
 // SetCurrent sets the current version (called from main)
@@ -143,9 +146,17 @@ func IsDisabled() bool {
 const defaultReleasesURL = "https://github.com/skyhook-io/radar/releases"
 
 func disabledUpdateInfo() *UpdateInfo {
+	mu.Lock()
+	if lastManualResult != nil && lastManualResult.CurrentVersion == Current {
+		result := *lastManualResult
+		mu.Unlock()
+		return &result
+	}
+	mu.Unlock()
 	method := detectInstallMethod()
 	return &UpdateInfo{
 		CurrentVersion: Current,
+		BuildChannel:   BuildChannelName(),
 		InstallMethod:  method,
 		UpdateCommand:  getUpdateCommand(method),
 		ReleaseURL:     defaultReleasesURL,
@@ -169,6 +180,22 @@ func CheckForUpdateRelease(_ context.Context) *UpdateInfo {
 		return disabledUpdateInfo()
 	}
 	return checkForUpdateCached(checkOptions{source: "release-only"})
+}
+
+// CheckForUpdateManual performs one fresh, user-requested lookup without changing
+// the automatic-check policy. Its last successful result stays visible while
+// automatic checks are disabled.
+func CheckForUpdateManual(ctx context.Context) *UpdateInfo {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	result := fetchLatestRelease(ctx, checkOptions{source: "release-only", manual: true})
+	if result.Error == "" {
+		mu.Lock()
+		copy := *result
+		lastManualResult = &copy
+		mu.Unlock()
+	}
+	return result
 }
 
 func RelayUpdateCheck(ctx context.Context) error {
@@ -254,11 +281,12 @@ func fetchLatestRelease(ctx context.Context, options checkOptions) *UpdateInfo {
 	method := detectInstallMethod()
 	result := &UpdateInfo{
 		CurrentVersion: Current,
+		BuildChannel:   BuildChannelName(),
 		InstallMethod:  method,
 		UpdateCommand:  getUpdateCommand(method),
 	}
 
-	if IsDisabled() || Current == "dev" {
+	if !options.manual && (IsDisabled() || Current == "dev") {
 		return result
 	}
 
@@ -331,6 +359,13 @@ func fetchLatestRelease(ctx context.Context, options checkOptions) *UpdateInfo {
 	result.LatestVersion = strings.TrimPrefix(release.TagName, "v")
 	result.ReleaseURL = release.HTMLURL
 	result.ReleaseNotes = truncateNotes(release.Body, 500)
+	if options.manual && IsDevelopmentBuild() {
+		if _, err := semver.NewVersion(result.LatestVersion); err != nil {
+			result.Error = fmt.Sprintf("invalid latest release version: %v", err)
+			log.Printf("[version] %s", result.Error)
+		}
+		return result
+	}
 
 	newer, err := isNewerVersion(result.LatestVersion, Current)
 	if err != nil {

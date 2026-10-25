@@ -94,9 +94,9 @@ func TestCreateMenuUpdateActionMatchesVersionCheckSetting(t *testing.T) {
 			wantVisible bool
 		}{
 			{"default", false, "", true},
-			{"flag or config opt-out", true, "", false},
-			{"environment opt-out", false, "1", false},
-			{"true environment opt-out", false, "true", false},
+			{"flag or config opt-out", true, "", true},
+			{"environment opt-out", false, "1", true},
+			{"true environment opt-out", false, "true", true},
 			{"environment leaves checks enabled", false, "0", true},
 		} {
 			t.Run(goos+"/"+tc.name, func(t *testing.T) {

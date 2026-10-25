@@ -556,6 +556,7 @@ func resetUpdateCache() {
 	defer mu.Unlock()
 	updateCache = map[string]updateCacheEntry{}
 	disabledByFlag = false
+	lastManualResult = nil
 }
 
 func TestCheckForUpdateDisabledByFlag(t *testing.T) {
@@ -672,6 +673,100 @@ func TestCheckForUpdateEnvironment(t *testing.T) {
 				if requestCount != 1 {
 					t.Errorf("made %d requests when enabled, want 1", requestCount)
 				}
+			}
+		})
+	}
+}
+
+func TestManualUpdateCheckPreservesAutomaticOptOut(t *testing.T) {
+	for _, byEnv := range []bool{false, true} {
+		name := "flag"
+		if byEnv {
+			name = "environment"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Setenv("RADAR_DISABLE_VERSION_CHECK", "")
+			var requests atomic.Int32
+			var status atomic.Int32
+			status.Store(http.StatusOK)
+			var tag atomic.Value
+			tag.Store("v1.3.0")
+			queries := make(chan url.Values, 16)
+			proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				queries <- r.URL.Query()
+				if code := int(status.Load()); code != http.StatusOK {
+					w.WriteHeader(code)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(githubRelease{TagName: tag.Load().(string)})
+			}))
+			t.Cleanup(proxy.Close)
+			previousURL, previousGitHub, previousVersion := releasesURL, githubURL, Current
+			releasesURL, githubURL = proxy.URL, proxy.URL
+			SetCurrent("1.2.0")
+			resetUpdateCache()
+			t.Cleanup(func() {
+				releasesURL, githubURL = previousURL, previousGitHub
+				SetCurrent(previousVersion)
+				resetUpdateCache()
+			})
+
+			if info := CheckForUpdate(context.Background()); info.LatestVersion != "1.3.0" {
+				t.Fatalf("warm cache: %+v", info)
+			}
+			<-queries
+			if byEnv {
+				t.Setenv("RADAR_DISABLE_VERSION_CHECK", "1")
+			} else {
+				SetDisabled(true)
+			}
+			for _, latest := range []string{"1.4.0", "1.5.0"} {
+				tag.Store("v" + latest)
+				info := CheckForUpdateManual(context.Background())
+				if info.Error != "" || !info.UpdateAvail || info.LatestVersion != latest {
+					t.Fatalf("fresh manual lookup: %+v", info)
+				}
+				if source := (<-queries).Get("source"); source != "release-only" {
+					t.Fatalf("manual source = %q, want release-only", source)
+				}
+			}
+			if got := requests.Load(); got != 3 {
+				t.Fatalf("requests = %d, want warm cache plus two fresh checks", got)
+			}
+			if !IsDisabled() {
+				t.Fatal("manual check changed the opt-out")
+			}
+			if info := CheckForUpdate(context.Background()); info.LatestVersion != "1.5.0" || !info.UpdateAvail {
+				t.Fatalf("automatic refresh lost the manual result: %+v", info)
+			}
+			if info := CheckForUpdateRelease(context.Background()); info.LatestVersion != "1.5.0" {
+				t.Fatalf("release-only refresh lost the manual result: %+v", info)
+			}
+			if err := RelayUpdateCheck(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if got := requests.Load(); got != 3 {
+				t.Fatalf("automatic checks made requests after manual check: %d", got)
+			}
+
+			status.Store(http.StatusBadGateway)
+			if info := CheckForUpdateManual(context.Background()); info.Error == "" {
+				t.Fatalf("failed manual lookup reported success: %+v", info)
+			}
+			if !IsDisabled() {
+				t.Fatal("failed manual check changed the opt-out")
+			}
+			status.Store(http.StatusOK)
+			for _, current := range []string{"dev", "1.6.0-37-g8b325b372", "abc1234", "radar-app-v0.3.1"} {
+				SetCurrent(current)
+				if info := CheckForUpdateManual(context.Background()); info.Error != "" || info.LatestVersion != "1.5.0" || info.UpdateAvail || info.BuildChannel != "development" {
+					t.Fatalf("development build manual result: %+v", info)
+				}
+			}
+			tag.Store("invalid")
+			if info := CheckForUpdateManual(context.Background()); info.Error == "" {
+				t.Fatalf("invalid release version reported success: %+v", info)
 			}
 		})
 	}

@@ -9,7 +9,9 @@ import {
   useDesktopUpdateStatus,
   useApplyDesktopUpdate,
 } from '../../api/client'
-import type { DesktopUpdateState } from '../../api/client'
+import type { DesktopUpdateState, VersionInfo } from '../../api/client'
+import { getApiBase } from '../../api/config'
+import { showApiError, showApiNotice, showApiSuccess } from './Toast'
 import { WithTooltip } from './Tooltip'
 import { TRANSITION_MENU, overlayExitMs, overlayTransitionStyle } from '../../utils/animation'
 import { useAnimatedUnmount } from '../../hooks/useAnimatedUnmount'
@@ -58,17 +60,38 @@ export function UpdateNotification({ placement = 'floating' }: { placement?: 'fl
     return () => document.removeEventListener('pointerdown', closeOutside)
   }, [expanded])
 
-  // Listen for "Check for Updates" menu item in desktop app.
   useEffect(() => {
+    if (inSettings) return
     const handler = () => {
+      void queryClient.cancelQueries({ queryKey: ['version-check', getApiBase()], exact: true })
+      showApiNotice('Checking for updates…', undefined, 'info')
+    }
+    const resultHandler = (event: Event) => {
+      const info = (event as CustomEvent<VersionInfo>).detail
+      if (info.error) {
+        showApiError('Could not check for updates', info.error)
+        return
+      }
+      void queryClient.cancelQueries({ queryKey: ['version-check', getApiBase()], exact: true })
       setDismissed(false)
       try { localStorage.removeItem(DISMISSED_KEY) } catch { /* ignore */ }
-      queryClient.invalidateQueries({ queryKey: ['version-check'] })
+      queryClient.setQueryData(['version-check', getApiBase()], info)
+      if (info.updateAvailable) {
+        showApiNotice(`Radar ${info.latestVersion} is available`, undefined, 'info')
+      } else if (info.buildChannel === 'development') {
+        showApiNotice(`Latest Radar release: ${info.latestVersion}`, 'You are running a development build.', 'info')
+      } else {
+        showApiSuccess("You're up to date", `Radar ${info.currentVersion}`)
+      }
     }
 
     window.addEventListener('radar:check-for-updates', handler)
-    return () => window.removeEventListener('radar:check-for-updates', handler)
-  }, [queryClient])
+    window.addEventListener('radar:update-check-result', resultHandler)
+    return () => {
+      window.removeEventListener('radar:check-for-updates', handler)
+      window.removeEventListener('radar:update-check-result', resultHandler)
+    }
+  }, [queryClient, inSettings])
 
   // Log version check errors for debugging
   useEffect(() => {
